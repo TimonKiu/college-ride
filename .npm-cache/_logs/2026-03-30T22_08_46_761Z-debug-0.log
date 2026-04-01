@@ -1,0 +1,191 @@
+0 verbose cli /usr/local/bin/node /usr/local/bin/npm
+1 info using npm@11.11.0
+2 info using node@v24.14.1
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/timonliu/Downloads/college-ride-preview/.npmrc
+5 silly config load:file:/Users/timonliu/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm install leaflet react-leaflet@4.2.1
+8 verbose argv "install" "leaflet" "react-leaflet@4.2.1"
+9 verbose logfile logs-max:10 dir:/Users/timonliu/Downloads/college-ride-preview/.npm-cache/_logs/2026-03-30T22_08_46_761Z-
+10 verbose logfile /Users/timonliu/Downloads/college-ride-preview/.npm-cache/_logs/2026-03-30T22_08_46_761Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+14 silly idealTree buildDeps
+15 silly fetch manifest leaflet@*
+16 silly packumentCache full:https://registry.npmjs.org/leaflet cache-miss
+17 http cache https://registry.npmjs.org/leaflet 10ms (cache hit)
+18 silly packumentCache full:https://registry.npmjs.org/leaflet set size:146664 disposed:false
+19 silly fetch manifest react-leaflet@4.2.1
+20 silly packumentCache full:https://registry.npmjs.org/react-leaflet cache-miss
+21 http cache https://registry.npmjs.org/react-leaflet 2ms (cache hit)
+22 silly packumentCache full:https://registry.npmjs.org/react-leaflet set size:472546 disposed:false
+23 silly fetch manifest react@^18.3.1
+24 silly packumentCache full:https://registry.npmjs.org/react cache-miss
+25 http cache https://registry.npmjs.org/react 5ms (cache hit)
+26 silly packumentCache full:https://registry.npmjs.org/react set size:6573158 disposed:false
+27 silly fetch manifest react-dom@^18.3.1
+28 silly packumentCache full:https://registry.npmjs.org/react-dom cache-miss
+29 http fetch GET 200 https://registry.npmjs.org/react-dom 140ms (cache revalidated)
+30 silly packumentCache full:https://registry.npmjs.org/react-dom set size:8735853 disposed:false
+31 silly placeDep ROOT leaflet@1.9.4 OK for: college-ride-preview@0.0.0 want: *
+32 silly placeDep ROOT react-leaflet@4.2.1 OK for: college-ride-preview@0.0.0 want: 4.2.1
+33 silly fetch manifest @react-leaflet/core@^2.1.0
+34 silly packumentCache full:https://registry.npmjs.org/@react-leaflet%2fcore cache-miss
+35 http fetch GET 200 https://registry.npmjs.org/@react-leaflet%2fcore 66ms (cache miss)
+36 silly packumentCache full:https://registry.npmjs.org/@react-leaflet%2fcore set size:undefined disposed:false
+37 silly fetch manifest leaflet@^1.9.0
+38 silly packumentCache full:https://registry.npmjs.org/leaflet cache-hit
+39 silly fetch manifest react@^18.0.0
+40 silly packumentCache full:https://registry.npmjs.org/react cache-miss
+41 http cache https://registry.npmjs.org/react 6ms (cache hit)
+42 silly packumentCache full:https://registry.npmjs.org/react set size:6573158 disposed:false
+43 silly fetch manifest react-dom@^18.0.0
+44 silly packumentCache full:https://registry.npmjs.org/react-dom cache-miss
+45 http cache https://registry.npmjs.org/react-dom 9ms (cache hit)
+46 silly packumentCache full:https://registry.npmjs.org/react-dom set size:8735853 disposed:false
+47 silly placeDep ROOT @react-leaflet/core@2.1.0 OK for: react-leaflet@4.2.1 want: ^2.1.0
+48 silly reify moves {}
+49 silly audit bulk request {
+49 silly audit   '@babel/code-frame': [ '7.29.0' ],
+49 silly audit   '@babel/compat-data': [ '7.29.0' ],
+49 silly audit   '@babel/core': [ '7.29.0' ],
+49 silly audit   '@babel/generator': [ '7.29.1' ],
+49 silly audit   '@babel/helper-compilation-targets': [ '7.28.6' ],
+49 silly audit   '@babel/helper-globals': [ '7.28.0' ],
+49 silly audit   '@babel/helper-module-imports': [ '7.28.6' ],
+49 silly audit   '@babel/helper-module-transforms': [ '7.28.6' ],
+49 silly audit   '@babel/helper-plugin-utils': [ '7.28.6' ],
+49 silly audit   '@babel/helper-string-parser': [ '7.27.1' ],
+49 silly audit   '@babel/helper-validator-identifier': [ '7.28.5' ],
+49 silly audit   '@babel/helper-validator-option': [ '7.27.1' ],
+49 silly audit   '@babel/helpers': [ '7.29.2' ],
+49 silly audit   '@babel/parser': [ '7.29.2' ],
+49 silly audit   '@babel/plugin-transform-react-jsx-self': [ '7.27.1' ],
+49 silly audit   '@babel/plugin-transform-react-jsx-source': [ '7.27.1' ],
+49 silly audit   '@babel/template': [ '7.28.6' ],
+49 silly audit   '@babel/traverse': [ '7.29.0' ],
+49 silly audit   '@babel/types': [ '7.29.0' ],
+49 silly audit   '@esbuild/aix-ppc64': [ '0.25.12' ],
+49 silly audit   '@esbuild/android-arm': [ '0.25.12' ],
+49 silly audit   '@esbuild/android-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/android-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/darwin-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/darwin-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/freebsd-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/freebsd-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-arm': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-ia32': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-loong64': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-mips64el': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-ppc64': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-riscv64': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-s390x': [ '0.25.12' ],
+49 silly audit   '@esbuild/linux-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/netbsd-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/netbsd-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/openbsd-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/openbsd-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/openharmony-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/sunos-x64': [ '0.25.12' ],
+49 silly audit   '@esbuild/win32-arm64': [ '0.25.12' ],
+49 silly audit   '@esbuild/win32-ia32': [ '0.25.12' ],
+49 silly audit   '@esbuild/win32-x64': [ '0.25.12' ],
+49 silly audit   '@jridgewell/gen-mapping': [ '0.3.13' ],
+49 silly audit   '@jridgewell/remapping': [ '2.3.5' ],
+49 silly audit   '@jridgewell/resolve-uri': [ '3.1.2' ],
+49 silly audit   '@jridgewell/sourcemap-codec': [ '1.5.5' ],
+49 silly audit   '@jridgewell/trace-mapping': [ '0.3.31' ],
+49 silly audit   '@rolldown/pluginutils': [ '1.0.0-beta.27' ],
+49 silly audit   '@rollup/rollup-android-arm-eabi': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-android-arm64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-darwin-arm64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-darwin-x64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-freebsd-arm64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-freebsd-x64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-arm-gnueabihf': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-arm-musleabihf': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-arm64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-arm64-musl': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-loong64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-loong64-musl': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-ppc64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-ppc64-musl': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-riscv64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-riscv64-musl': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-s390x-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-x64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-linux-x64-musl': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-openbsd-x64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-openharmony-arm64': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-win32-arm64-msvc': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-win32-ia32-msvc': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-win32-x64-gnu': [ '4.60.1' ],
+49 silly audit   '@rollup/rollup-win32-x64-msvc': [ '4.60.1' ],
+49 silly audit   '@types/babel__core': [ '7.20.5' ],
+49 silly audit   '@types/babel__generator': [ '7.27.0' ],
+49 silly audit   '@types/babel__template': [ '7.4.4' ],
+49 silly audit   '@types/babel__traverse': [ '7.28.0' ],
+49 silly audit   '@types/estree': [ '1.0.8' ],
+49 silly audit   '@vitejs/plugin-react': [ '4.7.0' ],
+49 silly audit   'baseline-browser-mapping': [ '2.10.12' ],
+49 silly audit   browserslist: [ '4.28.1' ],
+49 silly audit   'caniuse-lite': [ '1.0.30001782' ],
+49 silly audit   'convert-source-map': [ '2.0.0' ],
+49 silly audit   debug: [ '4.4.3' ],
+49 silly audit   'electron-to-chromium': [ '1.5.328' ],
+49 silly audit   esbuild: [ '0.25.12' ],
+49 silly audit   escalade: [ '3.2.0' ],
+49 silly audit   fdir: [ '6.5.0' ],
+49 silly audit   fsevents: [ '2.3.3' ],
+49 silly audit   gensync: [ '1.0.0-beta.2' ],
+49 silly audit   'js-tokens': [ '4.0.0' ],
+49 silly audit   jsesc: [ '3.1.0' ],
+49 silly audit   json5: [ '2.2.3' ],
+49 silly audit   'loose-envify': [ '1.4.0' ],
+49 silly audit   'lru-cache': [ '5.1.1' ],
+49 silly audit   ms: [ '2.1.3' ],
+49 silly audit   nanoid: [ '3.3.11' ],
+49 silly audit   'node-releases': [ '2.0.36' ],
+49 silly audit   picocolors: [ '1.1.1' ],
+49 silly audit   picomatch: [ '4.0.4' ],
+49 silly audit   postcss: [ '8.5.8' ],
+49 silly audit   react: [ '18.3.1' ],
+49 silly audit   'react-dom': [ '18.3.1' ],
+49 silly audit   'react-refresh': [ '0.17.0' ],
+49 silly audit   rollup: [ '4.60.1' ],
+49 silly audit   scheduler: [ '0.23.2' ],
+49 silly audit   semver: [ '6.3.1' ],
+49 silly audit   'source-map-js': [ '1.2.1' ],
+49 silly audit   tinyglobby: [ '0.2.15' ],
+49 silly audit   'update-browserslist-db': [ '1.2.3' ],
+49 silly audit   vite: [ '6.4.1' ],
+49 silly audit   yallist: [ '3.1.1' ],
+49 silly audit   leaflet: [ '1.9.4' ],
+49 silly audit   'react-leaflet': [ '4.2.1' ],
+49 silly audit   '@react-leaflet/core': [ '2.1.0' ]
+49 silly audit }
+50 http cache react-leaflet@https://registry.npmjs.org/react-leaflet/-/react-leaflet-4.2.1.tgz 0ms (cache hit)
+51 http cache leaflet@https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz 0ms (cache hit)
+52 http cache @react-leaflet/core@https://registry.npmjs.org/@react-leaflet/core/-/core-2.1.0.tgz 0ms (cache hit)
+53 http cache fsevents@https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz 0ms (cache hit)
+54 silly tarball no local data for react-leaflet@https://registry.npmjs.org/react-leaflet/-/react-leaflet-4.2.1.tgz. Extracting by manifest.
+55 silly tarball no local data for leaflet@https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz. Extracting by manifest.
+56 silly tarball no local data for @react-leaflet/core@https://registry.npmjs.org/@react-leaflet/core/-/core-2.1.0.tgz. Extracting by manifest.
+57 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 141ms
+58 silly audit report {}
+59 http fetch GET 200 https://registry.npmjs.org/@react-leaflet/core/-/core-2.1.0.tgz 139ms (cache miss)
+60 http fetch GET 200 https://registry.npmjs.org/react-leaflet/-/react-leaflet-4.2.1.tgz 160ms (cache miss)
+61 http fetch GET 200 https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz 225ms (cache miss)
+62 silly ADD node_modules/@react-leaflet/core
+63 silly ADD node_modules/react-leaflet
+64 silly ADD node_modules/leaflet
+65 silly ADD node_modules/fsevents
+66 verbose cwd /Users/timonliu/Downloads/college-ride-preview
+67 verbose os Darwin 25.4.0
+68 verbose node v24.14.1
+69 verbose npm  v11.11.0
+70 verbose exit 0
+71 info ok
