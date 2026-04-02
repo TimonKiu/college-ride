@@ -1,50 +1,25 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, Polyline, CircleMarker, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-/** DMV 知名院校（优先展示，便于快速选择） */
-const DMV_SCHOOLS_NOTABLE = [
-  "George Washington University",
-  "Georgetown University",
-  "Johns Hopkins University — Homewood Campus (Baltimore)",
-  "Johns Hopkins University — SAIS (Washington DC)",
-  "American University",
-  "Howard University",
-  "University of Maryland, College Park",
-  "George Mason University",
-  "Catholic University of America",
-  "University of the District of Columbia",
-  "Virginia Tech — Northern Virginia Center",
-  "University of Maryland, Baltimore County",
-  "University of Maryland Global Campus",
-  "Gallaudet University",
-  "Trinity Washington University",
-  "United States Naval Academy",
+/** 登录确定；未接登录前默认 JHU */
+const USER_SCHOOL = "Johns Hopkins University";
+
+const JHU_LOCATIONS = [
+  { id: "apl", label: "APL · Applied Physics Laboratory", short: "APL", lat: 39.1719, lng: -76.8686 },
+  { id: "bloomberg-dc", label: "Bloomberg Center · Washington DC", short: "Bloomberg Center", lat: 38.89248, lng: -77.0198 },
+  { id: "carey-harbor-east", label: "Carey Business School · Harbor East (Baltimore)", short: "Carey Harbor East", lat: 39.28254, lng: -76.60155 },
+  { id: "east-baltimore", label: "East Baltimore Campus · School of Medicine", short: "East Baltimore", lat: 39.2992, lng: -76.5929 },
+  { id: "gilman-homewood", label: "Gilman Hall · Homewood", short: "Gilman Hall", lat: 39.32913, lng: -76.6215 },
+  { id: "msel", label: "MSE Library · Homewood", short: "MSE Library", lat: 39.3278, lng: -76.6215 },
+  { id: "peabody", label: "Peabody Institute · Mount Vernon", short: "Peabody", lat: 39.2972, lng: -76.6158 },
+  { id: "sais-nitze", label: "SAIS · Nitze Building (Massachusetts Ave)", short: "SAIS Nitze", lat: 38.9079, lng: -77.0381 },
 ];
 
-/** 其余 DMV 地区院校（按校名排序） */
-const DMV_SCHOOLS_OTHER = [
-  "Anne Arundel Community College",
-  "Bowie State University",
-  "Capitol Technology University",
-  "College of Southern Maryland",
-  "Fairfax University of America",
-  "Howard Community College (MD)",
-  "Loyola University Maryland",
-  "Marymount University",
-  "Montgomery College",
-  "Morgan State University",
-  "Northern Virginia Community College",
-  "Prince George's Community College",
-  "Strayer University (Washington DC)",
-  "Towson University",
-  "Washington Adventist University",
-].sort((a, b) => a.localeCompare(b, "en"));
+const GEO_AUTO_PICK_MAX_M = 1200;
+const JHU_LOCATIONS_SORTED = [...JHU_LOCATIONS].sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base" }));
 
-const DMV_SCHOOLS_ALL = [...new Set([...DMV_SCHOOLS_NOTABLE, ...DMV_SCHOOLS_OTHER])];
-
-/** 演示用：DC 及周边地名 → [纬度, 经度] */
 const DC_AREA_POINTS = {
   "Foggy Bottom": [38.9009, -77.0507],
   "Capitol Hill": [38.8899, -77.0091],
@@ -56,10 +31,21 @@ const DC_AREA_POINTS = {
   "Navy Yard": [38.8742, -77.0072],
 };
 
+const BAL_AREA_POINTS = {
+  "Homewood Gate": [39.329, -76.621],
+  "Charles Village": [39.325, -76.615],
+  Hampden: [39.336, -76.632],
+  "JHU East Baltimore": [39.299, -76.593],
+  "Peabody Institute": [39.297, -76.616],
+  "SAIS (DC)": [38.9089, -77.0434],
+};
+
+const PICKER_AREA_POINTS = { ...DC_AREA_POINTS, ...BAL_AREA_POINTS };
+
 function nearestPlaceName(lat, lng) {
   let best = null;
   let bestD = Infinity;
-  for (const [name, coords] of Object.entries(DC_AREA_POINTS)) {
+  for (const [name, coords] of Object.entries(PICKER_AREA_POINTS)) {
     const [plat, plng] = coords;
     const d = (lat - plat) ** 2 + (lng - plng) ** 2;
     if (d < bestD) {
@@ -70,72 +56,95 @@ function nearestPlaceName(lat, lng) {
   return best ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 }
 
+function approxKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function getNearestBuilding(lat, lng) {
+  let nearest = null;
+  let nearestKm = Infinity;
+  for (const loc of JHU_LOCATIONS) {
+    const km = approxKm(lat, lng, loc.lat, loc.lng);
+    if (km < nearestKm) {
+      nearestKm = km;
+      nearest = loc;
+    }
+  }
+  return { nearest, nearestKm };
+}
+
 const MOCK_RIDES = [
   {
     id: 1,
     driver: "Alex K.",
-    school: "GWU",
-    from: "Foggy Bottom",
-    to: "Capitol Hill",
+    school: "JHU",
+    from: "Homewood Gate",
+    to: "Charles Village",
     time: "8:30 AM",
     seats: 2,
     price: 4.5,
     detour: "5 min",
     rating: 4.9,
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS["Foggy Bottom"];
-      const [toLat, toLng] = DC_AREA_POINTS["Capitol Hill"];
+      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
+      const [toLat, toLng] = BAL_AREA_POINTS["Charles Village"];
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
   {
     id: 2,
     driver: "Maya S.",
-    school: "Georgetown",
-    from: "Georgetown",
-    to: "Dupont Circle",
+    school: "JHU",
+    from: "Homewood Gate",
+    to: "Hampden",
     time: "9:00 AM",
     seats: 3,
     price: 3.0,
     detour: "3 min",
     rating: 4.8,
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS.Georgetown;
-      const [toLat, toLng] = DC_AREA_POINTS["Dupont Circle"];
+      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
+      const [toLat, toLng] = BAL_AREA_POINTS.Hampden;
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
   {
     id: 3,
     driver: "Jordan T.",
-    school: "American U",
-    from: "Tenleytown",
-    to: "Downtown DC",
+    school: "JHU",
+    from: "Peabody Institute",
+    to: "JHU East Baltimore",
     time: "9:15 AM",
     seats: 1,
     price: 5.5,
     detour: "8 min",
     rating: 4.7,
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS.Tenleytown;
-      const [toLat, toLng] = DC_AREA_POINTS["Downtown DC"];
+      const [fromLat, fromLng] = BAL_AREA_POINTS["Peabody Institute"];
+      const [toLat, toLng] = BAL_AREA_POINTS["JHU East Baltimore"];
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
   {
     id: 4,
     driver: "Priya M.",
-    school: "Howard",
-    from: "Shaw",
-    to: "Navy Yard",
+    school: "JHU",
+    from: "Dupont Circle",
+    to: "SAIS (DC)",
     time: "10:00 AM",
     seats: 2,
     price: 4.0,
     detour: "6 min",
     rating: 5.0,
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS.Shaw;
-      const [toLat, toLng] = DC_AREA_POINTS["Navy Yard"];
+      const [fromLat, fromLng] = DC_AREA_POINTS["Dupont Circle"];
+      const [toLat, toLng] = BAL_AREA_POINTS["SAIS (DC)"];
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
@@ -145,30 +154,30 @@ const MOCK_REQUESTS = [
   {
     id: 1,
     rider: "Sam L.",
-    school: "GWU",
-    from: "Foggy Bottom",
-    to: "Georgetown",
+    school: "JHU",
+    from: "Homewood Gate",
+    to: "Charles Village",
     time: "9:00 AM",
     earn: "+$3.80",
     detour: "4 min",
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS["Foggy Bottom"];
-      const [toLat, toLng] = DC_AREA_POINTS.Georgetown;
+      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
+      const [toLat, toLng] = BAL_AREA_POINTS["Charles Village"];
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
   {
     id: 2,
     rider: "Lena W.",
-    school: "Georgetown",
-    from: "Dupont Circle",
-    to: "Capitol Hill",
+    school: "JHU",
+    from: "Homewood Gate",
+    to: "Hampden",
     time: "8:45 AM",
     earn: "+$5.20",
     detour: "7 min",
     ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS["Dupont Circle"];
-      const [toLat, toLng] = DC_AREA_POINTS["Capitol Hill"];
+      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
+      const [toLat, toLng] = BAL_AREA_POINTS.Hampden;
       return { fromLat, fromLng, toLat, toLng };
     })(),
   },
@@ -278,12 +287,16 @@ const Icons = {
   ),
 };
 
-const PRIMARY = "#003399";
-const PRIMARY_RGB = "0, 51, 153";
+const RIDER_PRIMARY = "#003399";
+const RIDER_RGB = "0, 51, 153";
+/** 司机模式主题 */
+const DRIVER_PRIMARY = "#0a0a0a";
+const DRIVER_RGB = "10, 10, 10";
+const PRIMARY = RIDER_PRIMARY;
 
-const Avatar = ({ name }) => {
+const Avatar = ({ name, accent = PRIMARY }) => {
   const c = {
-    background: PRIMARY,
+    background: accent,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -309,7 +322,7 @@ const Avatar = ({ name }) => {
   );
 };
 
-const StarRating = ({ rating }) => (
+const StarRating = ({ rating, accent = PRIMARY }) => (
   <span
     style={{
       color: "#475569",
@@ -320,27 +333,30 @@ const StarRating = ({ rating }) => (
       gap: 4,
     }}
   >
-    <span style={{ display: "inline-flex", color: PRIMARY }}>{Icons.star}</span>
+    <span style={{ display: "inline-flex", color: accent }}>{Icons.star}</span>
     {rating}
   </span>
 );
 
-const Tag = ({ text }) => (
-  <span
-    style={{
-      background: `rgba(${PRIMARY_RGB}, 0.06)`,
-      color: PRIMARY,
-      fontSize: 11,
-      fontWeight: 600,
-      padding: "5px 10px",
-      borderRadius: 6,
-      letterSpacing: "0.02em",
-      border: `1px solid rgba(${PRIMARY_RGB}, 0.12)`,
-    }}
-  >
-    {text}
-  </span>
-);
+const Tag = ({ text, accent = PRIMARY }) => {
+  const rgb = accent === DRIVER_PRIMARY ? DRIVER_RGB : RIDER_RGB;
+  return (
+    <span
+      style={{
+        background: `rgba(${rgb}, 0.06)`,
+        color: accent,
+        fontSize: 11,
+        fontWeight: 600,
+        padding: "5px 10px",
+        borderRadius: 6,
+        letterSpacing: "0.02em",
+        border: `1px solid rgba(${rgb}, 0.12)`,
+      }}
+    >
+      {text}
+    </span>
+  );
+};
 
 function FitBounds({ positions }) {
   const map = useMap();
@@ -361,8 +377,8 @@ function MapClickLayer({ onPick }) {
   return null;
 }
 
-function MapPickerPanel({ onPick, onClose, lineColor }) {
-  const center = [38.9072, -77.0369];
+function MapPickerPanel({ onPick, onClose, lineColor, center }) {
+  const c = center ?? [38.9072, -77.0369];
   return (
     <div
       style={{
@@ -374,7 +390,13 @@ function MapPickerPanel({ onPick, onClose, lineColor }) {
         marginBottom: 12,
       }}
     >
-      <MapContainer center={center} zoom={12} style={{ height: "100%", width: "100%" }} scrollWheelZoom>
+      <MapContainer
+        key={`${c[0].toFixed(5)},${c[1].toFixed(5)}`}
+        center={c}
+        zoom={12}
+        style={{ height: "100%", width: "100%" }}
+        scrollWheelZoom
+      >
         <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <MapClickLayer
           onPick={(latlng) => {
@@ -420,6 +442,210 @@ function MapPickerPanel({ onPick, onClose, lineColor }) {
       >
         点击地图选择出发位置
       </div>
+    </div>
+  );
+}
+
+/** Photon（OSM）地点展示为一行可读地址 */
+function formatPhotonFeature(f) {
+  const p = f.properties || {};
+  const parts = [];
+  if (p.name) parts.push(p.name);
+  if (p.housenumber && p.street) parts.push(`${p.housenumber} ${p.street}`);
+  else if (p.street) parts.push(p.street);
+  const city = p.city || p.town || p.village || p.district;
+  if (city) parts.push(city);
+  if (p.state) parts.push(p.state);
+  if (p.country) parts.push(p.country);
+  if (parts.length) return [...new Set(parts)].join(", ");
+  const c = f.geometry?.coordinates;
+  if (c?.length >= 2) return `${c[1].toFixed(4)}, ${c[0].toFixed(4)}`;
+  return "";
+}
+
+/**
+ * 类似地图 App 的地址搜索：输入即请求 Photon 建议（无需 API Key）。
+ * 若需与 Google 完全一致，可后续换为 Places API + 后端代理。
+ */
+function PlaceSuggestField({
+  value,
+  onChange,
+  onCoordsChange,
+  placeholder,
+  icon,
+  borderColor,
+  inputStyle,
+  wrapperStyle,
+  hoverRgb = RIDER_RGB,
+  variant = "light",
+}) {
+  const dark = variant === "dark";
+  const wrapRef = useRef(null);
+  const timerRef = useRef(null);
+  const abortRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState([]);
+
+  useEffect(() => {
+    const q = value.trim();
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (abortRef.current) abortRef.current.abort();
+
+    if (q.length < 2) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setLoading(true);
+
+    timerRef.current = setTimeout(async () => {
+      try {
+        const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lang=zh`;
+        const res = await fetch(url, { signal: ac.signal });
+        if (!res.ok) {
+          if (!ac.signal.aborted) setItems([]);
+          return;
+        }
+        const data = await res.json();
+        if (!ac.signal.aborted) setItems(Array.isArray(data.features) ? data.features : []);
+      } catch (e) {
+        if (e.name !== "AbortError" && !ac.signal.aborted) setItems([]);
+      } finally {
+        if (!ac.signal.aborted) setLoading(false);
+      }
+    }, 380);
+
+    return () => {
+      clearTimeout(timerRef.current);
+      ac.abort();
+    };
+  }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const down = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", down);
+    return () => document.removeEventListener("mousedown", down);
+  }, [open]);
+
+  const handlePick = (feat) => {
+    const label = formatPhotonFeature(feat);
+    const coords = feat.geometry?.coordinates;
+    onChange(label);
+    if (coords?.length >= 2) onCoordsChange?.({ lat: coords[1], lng: coords[0] });
+    else onCoordsChange?.(null);
+    setOpen(false);
+    setItems([]);
+  };
+
+  const handleInputChange = (e) => {
+    onCoordsChange?.(null);
+    onChange(e.target.value);
+    setOpen(true);
+  };
+
+  const q = value.trim();
+  const showDropdown = open && q.length >= 2;
+  const listBg = dark ? "rgba(22,22,28,0.98)" : "#fff";
+  const listBorder = dark ? "rgba(255,255,255,0.18)" : borderColor;
+  const rowText = dark ? "#f1f5f9" : "#0a0a0a";
+  const mutedText = dark ? "rgba(148,163,184,0.95)" : "#64748b";
+
+  return (
+    <div
+      ref={wrapRef}
+      className={`cr-input-wrap${dark ? " cr-plan-input-dark-wrap" : ""}`}
+      style={{ position: "relative", ...wrapperStyle }}
+    >
+      {icon}
+      <input
+        type="text"
+        role="combobox"
+        aria-expanded={showDropdown}
+        aria-autocomplete="list"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={handleInputChange}
+        onFocus={() => setOpen(true)}
+        placeholder={placeholder}
+        className={dark ? "cr-plan-input-dark" : undefined}
+        style={{
+          ...inputStyle,
+          border: "none",
+          color: dark ? "#ffffff" : "#0a0a0a",
+          background: dark ? "transparent" : undefined,
+        }}
+      />
+      {showDropdown && (
+        <ul
+          role="listbox"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: "100%",
+            marginTop: 4,
+            marginBottom: 0,
+            padding: "4px 0",
+            maxHeight: 220,
+            overflowY: "auto",
+            borderRadius: 10,
+            border: `1px solid ${listBorder}`,
+            background: listBg,
+            boxShadow: dark ? "0 12px 32px rgba(0,0,0,0.45)" : "0 10px 28px rgba(0,0,0,0.12)",
+            zIndex: 80,
+            listStyle: "none",
+          }}
+        >
+          {loading && (
+            <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, fontWeight: 500 }}>搜索中…</li>
+          )}
+          {!loading &&
+            items.map((feat, i) => {
+              const label = formatPhotonFeature(feat);
+              const key = `${feat.properties?.osm_id ?? ""}-${feat.geometry?.coordinates?.join(",") ?? i}-${i}`;
+              return (
+                <li
+                  key={key}
+                  role="option"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    handlePick(feat);
+                  }}
+                  style={{
+                    padding: "9px 12px",
+                    fontSize: 13,
+                    color: rowText,
+                    cursor: "pointer",
+                    lineHeight: 1.35,
+                    fontWeight: 500,
+                    borderBottom: i < items.length - 1 ? (dark ? "1px solid rgba(255,255,255,0.08)" : "1px solid #f1f5f9") : "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = `rgba(${hoverRgb}, ${dark ? 0.18 : 0.08})`;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  {label}
+                </li>
+              );
+            })}
+          {!loading && items.length === 0 && (
+            <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, lineHeight: 1.45 }}>
+              未找到匹配地点，可继续手动输入或从地图选择
+            </li>
+          )}
+        </ul>
+      )}
     </div>
   );
 }
@@ -494,14 +720,31 @@ export default function CollegeRide() {
   const [tab, setTab] = useState("find");
   const [selectedRide, setSelectedRide] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [school, setSchool] = useState(
-    () => DMV_SCHOOLS_ALL.find((s) => s.includes("George Washington")) ?? DMV_SCHOOLS_ALL[0]
-  );
+  const [jhuLocationId, setJhuLocationId] = useState("gilman-homewood");
+  const userLockedCampus = useRef(false);
+  const [campusFilter, setCampusFilter] = useState("");
+  const [campusComboOpen, setCampusComboOpen] = useState(false);
+  const campusComboRef = useRef(null);
+  const campusComboInputRef = useRef(null);
   const [role, setRole] = useState("rider");
+  /** 仅用于主内容区切换动画方向；首次进入为 null 不播放 */
+  const [roleSlideTarget, setRoleSlideTarget] = useState(null);
+  const themePrimary = role === "driver" ? DRIVER_PRIMARY : RIDER_PRIMARY;
+  const themePrimaryRgb = role === "driver" ? DRIVER_RGB : RIDER_RGB;
   const [postSeats, setPostSeats] = useState(2);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [riderFrom, setRiderFrom] = useState("");
   const [riderTo, setRiderTo] = useState("");
+  /** 从 Photon 选中时写入，供后续算路与匹配使用 */
+  const [riderFromCoords, setRiderFromCoords] = useState(null);
+  const [riderToCoords, setRiderToCoords] = useState(null);
+  /** 出发地是否为设备定位「当前位置」 */
+  const [fromUseCurrentLocation, setFromUseCurrentLocation] = useState(true);
+  const [currentLocationCoords, setCurrentLocationCoords] = useState(null);
+  /** Uber 式全屏规划层 */
+  const [planTripOpen, setPlanTripOpen] = useState(false);
+  const [planTripFocus, setPlanTripFocus] = useState("to");
+  const [routePreviewReady, setRoutePreviewReady] = useState(false);
   const [publishFrom, setPublishFrom] = useState("");
   const [publishTo, setPublishTo] = useState("");
   const [mapPicker, setMapPicker] = useState(null);
@@ -510,9 +753,142 @@ export default function CollegeRide() {
     if (role === "rider" && tab === "post") setTab("find");
   }, [role, tab]);
 
+  useEffect(() => {
+    if (planTripOpen) setRoutePreviewReady(false);
+  }, [planTripOpen]);
+
+  useEffect(() => {
+    if (!planTripOpen) setMapPicker(null);
+  }, [planTripOpen]);
+
+  const campusesForSelect = useMemo(() => {
+    const q = campusFilter.trim().toLowerCase();
+    return JHU_LOCATIONS_SORTED.filter(
+      (loc) =>
+        !q ||
+        loc.label.toLowerCase().includes(q) ||
+        loc.short.toLowerCase().includes(q) ||
+        loc.id.toLowerCase().includes(q)
+    );
+  }, [campusFilter]);
+
+  useEffect(() => {
+    if (!campusComboOpen) return;
+    const onDown = (e) => {
+      if (campusComboRef.current && !campusComboRef.current.contains(e.target)) {
+        setCampusComboOpen(false);
+        setCampusFilter("");
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [campusComboOpen]);
+
+  useEffect(() => {
+    if (campusComboOpen) campusComboInputRef.current?.focus();
+  }, [campusComboOpen]);
+
+  const pickCampusByUser = (id) => {
+    userLockedCampus.current = true;
+    setJhuLocationId(id);
+    setCampusComboOpen(false);
+    setCampusFilter("");
+  };
+
+  const refreshLocationFromGeo = () => {
+    userLockedCampus.current = false;
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { nearest, nearestKm } = getNearestBuilding(pos.coords.latitude, pos.coords.longitude);
+        if (!nearest) return;
+        if (nearestKm * 1000 <= GEO_AUTO_PICK_MAX_M) {
+          setJhuLocationId(nearest.id);
+          setCampusFilter("");
+          setCampusComboOpen(false);
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 18000 }
+    );
+  };
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (userLockedCampus.current) return;
+        const { nearest, nearestKm } = getNearestBuilding(pos.coords.latitude, pos.coords.longitude);
+        if (!nearest) return;
+        if (nearestKm * 1000 <= GEO_AUTO_PICK_MAX_M) {
+          setJhuLocationId(nearest.id);
+          setCampusFilter("");
+          setCampusComboOpen(false);
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 18000, maximumAge: 120000 }
+    );
+  }, []);
+
+  const activeCampus = useMemo(() => JHU_LOCATIONS.find((l) => l.id === jhuLocationId) ?? JHU_LOCATIONS[0], [jhuLocationId]);
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng });
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCurrentLocationCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng }),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 }
+    );
+  }, [activeCampus.lat, activeCampus.lng]);
+
+  const effectiveFromLatLng = useMemo(() => {
+    if (fromUseCurrentLocation) {
+      return currentLocationCoords ?? { lat: activeCampus.lat, lng: activeCampus.lng };
+    }
+    return riderFromCoords;
+  }, [fromUseCurrentLocation, currentLocationCoords, riderFromCoords, activeCampus.lat, activeCampus.lng]);
+
+  const planModalMapCenter = useMemo(
+    () => effectiveFromLatLng ?? { lat: activeCampus.lat, lng: activeCampus.lng },
+    [effectiveFromLatLng, activeCampus.lat, activeCampus.lng]
+  );
+
+  const canConfirmPlanRoute = useMemo(
+    () => Boolean(riderToCoords && effectiveFromLatLng && (fromUseCurrentLocation ? true : riderFromCoords)),
+    [riderToCoords, effectiveFromLatLng, fromUseCurrentLocation, riderFromCoords]
+  );
+
+  const matchedRides = useMemo(() => {
+    const MAX_KM = 40;
+    const scored = MOCK_RIDES.map((r) => ({
+      ...r,
+      _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
+    }));
+    scored.sort((a, b) => a._km - b._km);
+    const filtered = scored.filter((r) => r._km <= MAX_KM);
+    return filtered.length ? filtered : scored;
+  }, [activeCampus]);
+
+  const matchedRequests = useMemo(() => {
+    const MAX_KM = 40;
+    const scored = MOCK_REQUESTS.map((r) => ({
+      ...r,
+      _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
+    }));
+    scored.sort((a, b) => a._km - b._km);
+    const filtered = scored.filter((r) => r._km <= MAX_KM);
+    return filtered.length ? filtered : scored;
+  }, [activeCampus]);
+
+  const mapPickerCenter = [activeCampus.lat, activeCampus.lng];
+
   const colors = {
-    navy: PRIMARY,
-    navyMid: "#002266",
+    navy: themePrimary,
+    navyMid: role === "driver" ? "#2a2a2a" : "#002266",
     white: "#ffffff",
     page: "#f4f6f9",
     card: "#ffffff",
@@ -520,7 +896,7 @@ export default function CollegeRide() {
     muted: "#64748b",
     border: "#dce3ed",
     navBg: "rgba(255,255,255,0.96)",
-    tint: `rgba(${PRIMARY_RGB}, 0.06)`,
+    tint: `rgba(${themePrimaryRgb}, 0.06)`,
   };
 
   const styles = {
@@ -533,16 +909,17 @@ export default function CollegeRide() {
       display: "flex",
       flexDirection: "column",
       position: "relative",
-      overflow: "hidden",
+      overflow: "visible",
       color: colors.text,
-      boxShadow: `0 0 0 1px rgba(${PRIMARY_RGB}, 0.06)`,
+      boxShadow: `0 0 0 1px rgba(${themePrimaryRgb}, 0.06)`,
     },
     header: {
       position: "relative",
       padding: "22px 20px 20px",
       color: colors.white,
-      overflow: "hidden",
+      overflow: "visible",
       background: colors.navy,
+      transition: "background-color 0.35s ease",
     },
     logo: {
       fontWeight: 700,
@@ -562,19 +939,6 @@ export default function CollegeRide() {
       alignItems: "center",
       justifyContent: "center",
       color: colors.white,
-    },
-    schoolBadge: {
-      marginTop: 10,
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-      background: "rgba(255,255,255,0.1)",
-      borderRadius: 8,
-      padding: "6px 12px",
-      fontSize: 12,
-      color: "rgba(255,255,255,0.9)",
-      fontWeight: 500,
-      border: "1px solid rgba(255,255,255,0.15)",
     },
     content: {
       flex: 1,
@@ -704,17 +1068,6 @@ export default function CollegeRide() {
     </div>
   );
 
-  const roleToggle = (active) => ({
-    background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)",
-    borderRadius: 8,
-    padding: "6px 14px",
-    fontSize: 12,
-    color: "rgba(255,255,255,0.95)",
-    cursor: "pointer",
-    border: active ? "1px solid rgba(255,255,255,0.35)" : "1px solid transparent",
-    fontWeight: active ? 600 : 500,
-  });
-
   if (confirmed && selectedRide) {
     return (
       <div style={{ ...styles.app, background: colors.navy }}>
@@ -823,14 +1176,14 @@ export default function CollegeRide() {
         <div style={styles.content}>
           <div style={styles.card}>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
-              <Avatar name={selectedRide.driver} />
+              <Avatar name={selectedRide.driver} accent={themePrimary} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 16, color: colors.text }}>{selectedRide.driver}</div>
                 <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>
-                  {selectedRide.school} · <StarRating rating={selectedRide.rating} />
+                  {selectedRide.school} · <StarRating rating={selectedRide.rating} accent={themePrimary} />
                 </div>
               </div>
-              <Tag text="已验证" />
+              <Tag text="已验证" accent={themePrimary} />
             </div>
             <div style={{ height: 1, background: colors.border, margin: "0 0 18px" }} />
             <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
@@ -859,7 +1212,7 @@ export default function CollegeRide() {
               fromLng={selectedRide.fromLng}
               toLat={selectedRide.toLat}
               toLng={selectedRide.toLng}
-              lineColor={PRIMARY}
+              lineColor={themePrimary}
             />
             <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
           </div>
@@ -889,7 +1242,7 @@ export default function CollegeRide() {
                 <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>参考价（网约车）</div>
                 <div style={{ fontSize: 16, fontWeight: 600, color: colors.muted, textDecoration: "line-through" }}>$8.50</div>
                 <div style={{ marginTop: 8 }}>
-                  <Tag text="省 47%" />
+                  <Tag text="省 47%" accent={themePrimary} />
                 </div>
               </div>
             </div>
@@ -944,12 +1297,12 @@ export default function CollegeRide() {
         <div style={styles.content}>
           <div style={styles.card}>
             <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
-              <Avatar name={req.rider} />
+              <Avatar name={req.rider} accent={themePrimary} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 16, color: colors.text }}>{req.rider}</div>
                 <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>{req.school}</div>
               </div>
-              <Tag text="待接单" />
+              <Tag text="待接单" accent={themePrimary} />
             </div>
             <div style={{ height: 1, background: colors.border, margin: "0 0 18px" }} />
             <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
@@ -973,7 +1326,7 @@ export default function CollegeRide() {
 
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>路线地图</div>
-            <TripRouteMap fromLat={req.fromLat} fromLng={req.fromLng} toLat={req.toLat} toLng={req.toLng} lineColor={PRIMARY} />
+            <TripRouteMap fromLat={req.fromLat} fromLng={req.fromLng} toLat={req.toLat} toLng={req.toLng} lineColor={themePrimary} />
             <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
           </div>
 
@@ -1012,9 +1365,18 @@ export default function CollegeRide() {
     <div style={styles.app}>
       <link href={FONT_LINK} rel="stylesheet" />
       <style>{`
+        @keyframes crSlideInFromRight {
+          from { transform: translateX(100%); opacity: 0.92; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes crSlideInFromLeft {
+          from { transform: translateX(-100%); opacity: 0.92; }
+          to { transform: translateX(0); opacity: 1; }
+        }
         .cr-ride-card { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
-        .cr-ride-card:hover { box-shadow: 0 8px 24px rgba(${PRIMARY_RGB}, 0.1); border-color: #c5d0e0; }
-        .cr-input-wrap:focus-within { border-color: ${PRIMARY}; box-shadow: 0 0 0 3px rgba(${PRIMARY_RGB}, 0.15); }
+        .cr-ride-card:hover { box-shadow: 0 8px 24px rgba(${themePrimaryRgb}, 0.1); border-color: #c5d0e0; }
+        .cr-input-wrap:focus-within { border-color: ${themePrimary}; box-shadow: 0 0 0 3px rgba(${themePrimaryRgb}, 0.15); }
+        .cr-plan-input-dark::placeholder { color: rgba(255,255,255,0.45); }
       `}</style>
 
       <div style={styles.header}>
@@ -1029,124 +1391,389 @@ export default function CollegeRide() {
             <p style={{ margin: "10px 0 0", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, maxWidth: 280, fontWeight: 400 }}>
               更便宜，更安全，和同校同学一起上学。
             </p>
-            <div
-              style={{
-                ...styles.schoolBadge,
-                marginTop: 12,
-                maxWidth: 260,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-              title={school}
-            >
-              {school}
+            <div style={{ marginTop: 12, maxWidth: 280 }}>
+              <div ref={campusComboRef} style={{ position: "relative", width: "100%" }}>
+                <div
+                  style={{
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "stretch",
+                    borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "#fff",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <input
+                    ref={campusComboInputRef}
+                    id="cr-jhu-campus-combo"
+                    type="text"
+                    role="combobox"
+                    aria-expanded={campusComboOpen}
+                    aria-haspopup="listbox"
+                    aria-controls="cr-jhu-campus-listbox"
+                    aria-autocomplete="list"
+                    aria-label="选择教学楼或校区"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={campusComboOpen ? campusFilter : activeCampus.label}
+                    readOnly={!campusComboOpen}
+                    placeholder={campusComboOpen ? "输入名称筛选…" : undefined}
+                    onChange={(e) => setCampusFilter(e.target.value)}
+                    onClick={() => {
+                      if (!campusComboOpen) {
+                        setCampusComboOpen(true);
+                        setCampusFilter("");
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && campusComboOpen) {
+                        e.preventDefault();
+                        setCampusComboOpen(false);
+                        setCampusFilter("");
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "10px 40px 10px 12px",
+                      borderRadius: 8,
+                      border: "none",
+                      background: "transparent",
+                      color: "#0a0a0a",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                      outline: "none",
+                      boxSizing: "border-box",
+                      cursor: campusComboOpen ? "text" : "pointer",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={campusComboOpen ? "收起校区列表" : "展开校区列表"}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setCampusComboOpen((open) => {
+                        setCampusFilter("");
+                        return !open;
+                      });
+                    }}
+                    style={{
+                      position: "absolute",
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 40,
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 0,
+                      borderRadius: "0 8px 8px 0",
+                    }}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#0a0a0a"
+                      strokeWidth="2"
+                      style={{
+                        transform: campusComboOpen ? "rotate(180deg)" : "none",
+                        transition: "transform 0.15s ease",
+                      }}
+                    >
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                </div>
+                {campusComboOpen && (
+                  <ul
+                    id="cr-jhu-campus-listbox"
+                    role="listbox"
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      top: "100%",
+                      marginTop: 4,
+                      padding: "4px 0",
+                      maxHeight: 240,
+                      overflowY: "auto",
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.35)",
+                      background: "#fff",
+                      boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
+                      zIndex: 9999,
+                      listStyle: "none",
+                      marginBottom: 0,
+                    }}
+                  >
+                    {campusesForSelect.length === 0 ? (
+                      <li style={{ padding: "10px 12px", fontSize: 13, color: "rgba(100,116,139,0.95)" }}>无匹配项，请修改关键词</li>
+                    ) : (
+                      campusesForSelect.map((loc) => (
+                        <li
+                          key={loc.id}
+                          role="option"
+                          aria-selected={loc.id === jhuLocationId}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            pickCampusByUser(loc.id);
+                          }}
+                          style={{
+                            padding: "10px 12px",
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: "#0a0a0a",
+                            cursor: "pointer",
+                            background:
+                              loc.id === jhuLocationId ? `rgba(${themePrimaryRgb}, 0.12)` : "transparent",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (loc.id !== jhuLocationId)
+                              e.currentTarget.style.background = `rgba(${themePrimaryRgb}, 0.06)`;
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background =
+                              loc.id === jhuLocationId ? `rgba(${themePrimaryRgb}, 0.12)` : "transparent";
+                          }}
+                        >
+                          {loc.label}
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={refreshLocationFromGeo}
+                style={{
+                  marginTop: 8,
+                  padding: "6px 10px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "rgba(255,255,255,0.95)",
+                  background: "rgba(255,255,255,0.12)",
+                  border: "1px solid rgba(255,255,255,0.28)",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                }}
+              >
+                根据定位重新匹配教学楼
+              </button>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 4, flexShrink: 0 }}>
-            <div style={roleToggle(role === "rider")} onClick={() => setRole("rider")}>
+          <div
+            role="group"
+            aria-label="身份：乘客或司机"
+            style={{
+              position: "relative",
+              display: "flex",
+              alignItems: "stretch",
+              width: 156,
+              marginTop: 4,
+              flexShrink: 0,
+              padding: 4,
+              borderRadius: 999,
+              background: role === "driver" ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.22)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              boxShadow: "inset 0 2px 5px rgba(0,0,0,0.35)",
+            }}
+          >
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                top: 4,
+                bottom: 4,
+                left: role === "rider" ? 4 : "50%",
+                right: role === "rider" ? "50%" : 4,
+                borderRadius: 999,
+                background: "rgba(255,255,255,0.22)",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                transition:
+                  "left 0.28s cubic-bezier(0.22, 1, 0.36, 1), right 0.28s cubic-bezier(0.22, 1, 0.36, 1)",
+              }}
+            />
+            <button
+              type="button"
+              aria-pressed={role === "rider"}
+              onClick={() => {
+                setRoleSlideTarget("rider");
+                setRole("rider");
+              }}
+              style={{
+                position: "relative",
+                zIndex: 1,
+                flex: 1,
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                fontFamily: "'Inter', system-ui, sans-serif",
+                padding: "8px 6px",
+                borderRadius: 999,
+                fontSize: role === "rider" ? 14 : 11,
+                fontWeight: role === "rider" ? 700 : 500,
+                color: role === "rider" ? "rgba(255,255,255,0.98)" : "rgba(255,255,255,0.45)",
+                letterSpacing: role === "rider" ? "-0.02em" : "0",
+                transition: "font-size 0.22s ease, font-weight 0.22s ease, color 0.22s ease",
+              }}
+            >
               乘客
-            </div>
-            <div style={roleToggle(role === "driver")} onClick={() => setRole("driver")}>
+            </button>
+            <button
+              type="button"
+              aria-pressed={role === "driver"}
+              onClick={() => {
+                setRoleSlideTarget("driver");
+                setRole("driver");
+              }}
+              style={{
+                position: "relative",
+                zIndex: 1,
+                flex: 1,
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                fontFamily: "'Inter', system-ui, sans-serif",
+                padding: "8px 6px",
+                borderRadius: 999,
+                fontSize: role === "driver" ? 14 : 11,
+                fontWeight: role === "driver" ? 700 : 500,
+                color: role === "driver" ? "rgba(255,255,255,0.98)" : "rgba(255,255,255,0.45)",
+                letterSpacing: role === "driver" ? "-0.02em" : "0",
+                transition: "font-size 0.22s ease, font-weight 0.22s ease, color 0.22s ease",
+              }}
+            >
               司机
-            </div>
+            </button>
           </div>
         </div>
       </div>
 
-      <div style={styles.content}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+        <div
+          key={role}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "18px 16px 96px",
+            background: colors.page,
+            animation:
+              roleSlideTarget === "rider"
+                ? "crSlideInFromRight 0.38s cubic-bezier(0.22, 1, 0.36, 1) both"
+                : roleSlideTarget === "driver"
+                  ? "crSlideInFromLeft 0.38s cubic-bezier(0.22, 1, 0.36, 1) both"
+                  : "none",
+          }}
+        >
         {tab === "find" && role === "rider" && (
           <>
             <div style={{ ...styles.card, marginTop: 2, padding: "20px" }}>
               <div style={styles.label}>路线</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 14, letterSpacing: "-0.02em" }}>搜索行程</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>出发地</div>
               <div
-                className="cr-input-wrap"
                 style={{
-                  position: "relative",
-                  marginBottom: 8,
-                  borderRadius: 10,
                   border: `1px solid ${colors.border}`,
+                  borderRadius: 12,
+                  overflow: "hidden",
                   background: colors.white,
-                  transition: "box-shadow 0.2s, border-color 0.2s",
+                  display: "flex",
+                  alignItems: "stretch",
                 }}
               >
-                <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: colors.navy, display: "flex" }}>{Icons.pin}</span>
-                <input
-                  value={riderFrom}
-                  onChange={(e) => setRiderFrom(e.target.value)}
-                  style={{ ...styles.input, marginBottom: 0, border: "none", paddingLeft: 40 }}
-                  placeholder="出发地（如：Foggy Bottom）"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => setMapPicker((p) => (p === "rider-from" ? null : "rider-from"))}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  marginBottom: 12,
-                  padding: "4px 0",
-                  border: "none",
-                  background: "none",
-                  color: colors.navy,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                }}
-              >
-                <span style={{ display: "flex" }}>{Icons.mapPath}</span>
-                从地图选择
-              </button>
-              {mapPicker === "rider-from" && (
-                <MapPickerPanel
-                  lineColor={colors.navy}
-                  onPick={(name) => {
-                    setRiderFrom(name);
-                    setMapPicker(null);
-                  }}
-                  onClose={() => setMapPicker(null)}
-                />
-              )}
-              <div
-                className="cr-input-wrap"
-                style={{
-                  position: "relative",
-                  marginBottom: 10,
-                  borderRadius: 10,
-                  border: `1px solid ${colors.border}`,
-                  background: colors.white,
-                  transition: "box-shadow 0.2s, border-color 0.2s",
-                }}
-              >
-                <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: colors.navy, display: "flex" }}>{Icons.flag}</span>
-                <input
-                  value={riderTo}
-                  onChange={(e) => setRiderTo(e.target.value)}
-                  style={{ ...styles.input, marginBottom: 0, border: "none", paddingLeft: 40 }}
-                  placeholder="目的地（如：Capitol Hill）"
-                />
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
                 <div
-                  className="cr-input-wrap"
-                  style={{ position: "relative", flex: 1, borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.white }}
+                  style={{
+                    width: 28,
+                    flexShrink: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    paddingTop: 14,
+                    paddingBottom: 14,
+                    background: colors.page,
+                    borderRight: `1px solid ${colors.border}`,
+                  }}
                 >
-                  <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: colors.navy, display: "flex" }}>{Icons.clock}</span>
-                  <input style={{ ...styles.input, marginBottom: 0, border: "none", width: "100%" }} placeholder="时间（如：9:00 AM）" />
+                  <div style={{ width: 9, height: 9, borderRadius: "50%", border: `2px solid ${colors.navy}` }} />
+                  <div style={{ flex: 1, width: 2, background: colors.border, margin: "6px 0" }} />
+                  <div style={{ width: 8, height: 8, background: colors.navy, borderRadius: 2 }} />
                 </div>
-                <button type="button" style={{ ...styles.btn, width: "auto", minWidth: 96, padding: "14px 18px", marginBottom: 0, flexShrink: 0 }}>
-                  搜索
-                </button>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlanTripFocus("from");
+                      setPlanTripOpen(true);
+                    }}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      padding: "14px 12px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: 15,
+                      fontWeight: 600,
+                      color: colors.text,
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                    }}
+                  >
+                    {fromUseCurrentLocation ? "当前位置" : riderFrom || "输入出发地"}
+                  </button>
+                  <div style={{ height: 1, background: colors.border }} />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlanTripFocus("to");
+                      setPlanTripOpen(true);
+                    }}
+                    style={{
+                      flex: 1,
+                      textAlign: "left",
+                      padding: "14px 12px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: 15,
+                      fontWeight: riderTo ? 600 : 400,
+                      color: riderTo ? colors.text : colors.muted,
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                    }}
+                  >
+                    {riderTo || "您想去哪里？"}
+                  </button>
+                </div>
               </div>
+              {routePreviewReady && effectiveFromLatLng && riderToCoords && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ ...styles.label, marginTop: 0 }}>路线预览</div>
+                  <TripRouteMap
+                    fromLat={effectiveFromLatLng.lat}
+                    fromLng={effectiveFromLatLng.lng}
+                    toLat={riderToCoords.lat}
+                    toLng={riderToCoords.lng}
+                    lineColor={themePrimary}
+                  />
+                </div>
+              )}
             </div>
 
             <div style={styles.sectionTitle}>附近行程</div>
-            <div style={styles.sectionHeadline}>共 {MOCK_RIDES.length} 条匹配</div>
-            {MOCK_RIDES.map((ride) => (
+            <div style={styles.sectionHeadline}>共 {matchedRides.length} 条匹配</div>
+            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
+              根据你在「{activeCampus.short}」的位置，优先展示附近可搭乘的行程
+            </p>
+            {matchedRides.map((ride) => (
               <div
                 key={ride.id}
                 className="cr-ride-card"
@@ -1158,7 +1785,7 @@ export default function CollegeRide() {
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <Avatar name={ride.driver} />
+                    <Avatar name={ride.driver} accent={themePrimary} />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 15, color: colors.text }}>{ride.driver}</div>
                       <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>
@@ -1201,9 +1828,9 @@ export default function CollegeRide() {
                 </div>
 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  <Tag text={ride.time} />
-                  <Tag text={`${ride.seats} 席`} />
-                  <Tag text={`绕路 ${ride.detour}`} />
+                  <Tag text={ride.time} accent={themePrimary} />
+                  <Tag text={`${ride.seats} 席`} accent={themePrimary} />
+                  <Tag text={`绕路 ${ride.detour}`} accent={themePrimary} />
                 </div>
               </div>
             ))}
@@ -1214,13 +1841,16 @@ export default function CollegeRide() {
           <>
             <div style={styles.sectionTitle}>司机</div>
             <div style={styles.sectionHeadline}>顺路请求</div>
+            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
+              根据你在「{activeCampus.short}」的位置，优先展示附近乘客请求
+            </p>
             <div style={{ ...styles.card, background: colors.white, border: `1px solid ${colors.border}`, marginBottom: 16 }}>
               <div style={{ fontSize: 13, color: colors.text, fontWeight: 600, marginBottom: 6 }}>匹配说明</div>
               <div style={{ fontSize: 13, color: colors.muted, lineHeight: 1.55, fontWeight: 400 }}>
                 系统根据绕路距离推荐顺路乘客；接单后按实际绕路计费。
               </div>
             </div>
-            {MOCK_REQUESTS.map((req) => (
+            {matchedRequests.map((req) => (
               <div
                 key={req.id}
                 className="cr-ride-card"
@@ -1234,7 +1864,7 @@ export default function CollegeRide() {
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <Avatar name={req.rider} />
+                    <Avatar name={req.rider} accent={themePrimary} />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 15 }}>{req.rider}</div>
                       <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>{req.school}</div>
@@ -1252,9 +1882,10 @@ export default function CollegeRide() {
                     <span>{req.to}</span>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  <Tag text={req.time} />
-                  <Tag text={`绕路 ${req.detour}`} />
+                <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+                  <Tag text={req.time} accent={themePrimary} />
+                  <Tag text={`绕路 ${req.detour}`} accent={themePrimary} />
+                  {typeof req._km === "number" && <Tag text={`距你约 ${req._km.toFixed(1)} km`} accent={themePrimary} />}
                 </div>
                 <button
                   type="button"
@@ -1310,6 +1941,7 @@ export default function CollegeRide() {
               {mapPicker === "publish-from" && (
                 <MapPickerPanel
                   lineColor={colors.navy}
+                  center={mapPickerCenter}
                   onPick={(name) => {
                     setPublishFrom(name);
                     setMapPicker(null);
@@ -1381,7 +2013,7 @@ export default function CollegeRide() {
               <div key={i} style={styles.card}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600 }}>{item.date}</div>
-                  <Tag text={item.type} />
+                  <Tag text={item.type} accent={themePrimary} />
                 </div>
                 <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
                   {item.from} — {item.to}
@@ -1426,16 +2058,16 @@ export default function CollegeRide() {
                   fontSize: 30,
                   margin: "0 auto 14px",
                   border: `4px solid ${colors.white}`,
-                  boxShadow: `0 4px 16px rgba(${PRIMARY_RGB}, 0.25)`,
+                  boxShadow: `0 4px 16px rgba(${themePrimaryRgb}, 0.25)`,
                 }}
               >
                 T
               </div>
               <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Timon L.</div>
-              <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>GWU · 2024级</div>
+              <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>JHU · 2024级</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", alignItems: "center" }}>
-                <Tag text="已验证学生" />
-                <StarRating rating={4.9} />
+                <Tag text="已验证学生" accent={themePrimary} />
+                <StarRating rating={4.9} accent={themePrimary} />
               </div>
             </div>
 
@@ -1454,48 +2086,15 @@ export default function CollegeRide() {
             </div>
 
             <div style={styles.card}>
-              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>我的学校</div>
-              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 10 }}>选择你所在的 DMV 地区院校；将影响推荐与匹配。</div>
-              <label htmlFor="cr-school-select" style={{ ...styles.label, display: "block", marginBottom: 8 }}>
-                学校
-              </label>
-              <select
-                id="cr-school-select"
-                value={school}
-                onChange={(e) => setSchool(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "12px 14px",
-                  borderRadius: 10,
-                  border: `1px solid ${colors.border}`,
-                  fontSize: 14,
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                  fontWeight: 500,
-                  backgroundColor: colors.white,
-                  color: colors.text,
-                  cursor: "pointer",
-                  boxSizing: "border-box",
-                  outline: "none",
-                }}
-              >
-                <optgroup label="知名院校（快速选择）">
-                  {DMV_SCHOOLS_NOTABLE.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="更多 DMV 院校">
-                  {DMV_SCHOOLS_OTHER.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </optgroup>
-              </select>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>学校</div>
+              <div style={{ fontSize: 14, color: colors.text, fontWeight: 600, marginBottom: 8 }}>{USER_SCHOOL}</div>
+              <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.55 }}>
+                学校由登录与身份验证确定，不可在此修改。教学楼 / 校区请在首页顶部下拉选择。
+              </div>
             </div>
           </>
         )}
+        </div>
       </div>
 
       <div style={styles.navBar}>
@@ -1504,6 +2103,364 @@ export default function CollegeRide() {
         <NavItem icon={Icons.list} label="记录" id="history" />
         <NavItem icon={Icons.user} label="我的" id="profile" />
       </div>
+
+      {planTripOpen && role === "rider" && tab === "find" && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 100000,
+              display: "flex",
+              flexDirection: "column",
+              background: "#000",
+            }}
+          >
+            <div style={{ flex: 1, minHeight: 0, position: "relative", height: "100vh" }}>
+              <MapContainer
+                key={`plan-${planModalMapCenter.lat}-${planModalMapCenter.lng}`}
+                center={[planModalMapCenter.lat, planModalMapCenter.lng]}
+                zoom={13}
+                style={{ height: "100%", width: "100%", zIndex: 0 }}
+                scrollWheelZoom
+              >
+                <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              </MapContainer>
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 1,
+                  pointerEvents: "none",
+                  background: "linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 38%, transparent 62%, rgba(0,0,0,0.35) 100%)",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 2,
+                  padding: "10px 12px 8px",
+                  paddingTop: "max(10px, env(safe-area-inset-top))",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  pointerEvents: "auto",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setPlanTripOpen(false)}
+                  aria-label="返回"
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    border: "none",
+                    background: "rgba(0,0,0,0.35)",
+                    color: "#fff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
+                </button>
+                <span style={{ fontWeight: 600, fontSize: 17, color: "#fff", letterSpacing: "-0.02em" }}>规划您的行程</span>
+              </div>
+            </div>
+
+            <div
+              style={{
+                position: "absolute",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                zIndex: 3,
+                maxHeight: "88vh",
+                overflowY: "auto",
+                borderRadius: "18px 18px 0 0",
+                background: themePrimary,
+                boxShadow: "0 -12px 48px rgba(0,0,0,0.45)",
+                padding: "16px 16px max(20px, env(safe-area-inset-bottom))",
+                pointerEvents: "auto",
+              }}
+            >
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "rgba(255,255,255,0.1)",
+                    color: "rgba(255,255,255,0.95)",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                  }}
+                >
+                  <span style={{ display: "flex" }}>{Icons.clock}</span>
+                  立即接载
+                  <span style={{ opacity: 0.7, fontSize: 10 }}>▾</span>
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "rgba(255,255,255,0.1)",
+                    color: "rgba(255,255,255,0.95)",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                  }}
+                >
+                  <span style={{ display: "flex" }}>{Icons.user}</span>
+                  为我本人
+                  <span style={{ opacity: 0.7, fontSize: 10 }}>▾</span>
+                </button>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+                <div
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    borderRadius: 12,
+                    overflow: "hidden",
+                    background: "rgba(0,0,0,0.2)",
+                    minWidth: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 26,
+                      flexShrink: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      paddingTop: 12,
+                      paddingBottom: 12,
+                      borderRight: "1px solid rgba(255,255,255,0.12)",
+                    }}
+                  >
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.95)" }} />
+                    <div style={{ flex: 1, width: 2, background: "rgba(255,255,255,0.35)", margin: "5px 0" }} />
+                    <div style={{ width: 8, height: 8, background: "#fff", borderRadius: 2 }} />
+                  </div>
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                    <div style={{ flex: 1, minHeight: 48, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                      {fromUseCurrentLocation ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFromUseCurrentLocation(false);
+                            setRiderFrom("");
+                            setRiderFromCoords(null);
+                          }}
+                          style={{
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "10px 10px 10px 8px",
+                            border: "none",
+                            background: "transparent",
+                            color: "rgba(255,255,255,0.95)",
+                            fontSize: 15,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            fontFamily: "'Inter', system-ui, sans-serif",
+                          }}
+                        >
+                          当前位置
+                        </button>
+                      ) : (
+                        <PlaceSuggestField
+                          value={riderFrom}
+                          onChange={setRiderFrom}
+                          onCoordsChange={setRiderFromCoords}
+                          placeholder="搜索出发地"
+                          variant="dark"
+                          icon={
+                            <span
+                              style={{
+                                position: "absolute",
+                                left: 10,
+                                top: "50%",
+                                transform: "translateY(-50%)",
+                                color: "rgba(255,255,255,0.85)",
+                                display: "flex",
+                                zIndex: 1,
+                                pointerEvents: "none",
+                              }}
+                            >
+                              {Icons.pin}
+                            </span>
+                          }
+                          borderColor="rgba(255,255,255,0.25)"
+                          hoverRgb={themePrimaryRgb}
+                          inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36, paddingTop: 10, paddingBottom: 10, fontSize: 15 }}
+                          wrapperStyle={{
+                            borderRadius: 0,
+                            border: "none",
+                            background: "transparent",
+                            marginBottom: 0,
+                          }}
+                        />
+                      )}
+                    </div>
+                    <div style={{ height: 1, background: "rgba(255,255,255,0.12)" }} />
+                    <div style={{ flex: 1, minHeight: 52 }}>
+                      <PlaceSuggestField
+                        value={riderTo}
+                        onChange={setRiderTo}
+                        onCoordsChange={setRiderToCoords}
+                        placeholder={planTripFocus === "to" ? "您想去哪里？" : "搜索目的地"}
+                        variant="dark"
+                        icon={
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: 10,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              color: "rgba(255,255,255,0.85)",
+                              display: "flex",
+                              zIndex: 1,
+                              pointerEvents: "none",
+                            }}
+                          >
+                            {Icons.flag}
+                          </span>
+                        }
+                        borderColor="rgba(255,255,255,0.25)"
+                        hoverRgb={themePrimaryRgb}
+                        inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36, paddingTop: 12, paddingBottom: 12, fontSize: 15 }}
+                        wrapperStyle={{
+                          borderRadius: 0,
+                          border: "none",
+                          background: "transparent",
+                          marginBottom: 0,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="添加途经点"
+                  style={{
+                    width: 44,
+                    flexShrink: 0,
+                    alignSelf: "center",
+                    height: 44,
+                    borderRadius: "50%",
+                    border: "1px solid rgba(255,255,255,0.35)",
+                    background: "rgba(255,255,255,0.12)",
+                    color: "#fff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ display: "flex" }}>{Icons.plus}</span>
+                </button>
+              </div>
+
+              {!fromUseCurrentLocation && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFromUseCurrentLocation(true);
+                    setRiderFrom("");
+                    setRiderFromCoords(null);
+                  }}
+                  style={{
+                    marginTop: 10,
+                    padding: 0,
+                    border: "none",
+                    background: "none",
+                    color: "rgba(255,255,255,0.65)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                  }}
+                >
+                  使用当前位置作为出发地
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setMapPicker((p) => (p === "rider-from" ? null : "rider-from"))}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginTop: 12,
+                  padding: "4px 0",
+                  border: "none",
+                  background: "none",
+                  color: "rgba(255,255,255,0.85)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                }}
+              >
+                <span style={{ display: "flex" }}>{Icons.mapPath}</span>
+                从地图选择出发地
+              </button>
+
+              {mapPicker === "rider-from" && (
+                <div style={{ position: "relative", zIndex: 20, marginTop: 10 }}>
+                  <MapPickerPanel
+                    lineColor={themePrimary}
+                    center={mapPickerCenter}
+                    onPick={(name) => {
+                      setFromUseCurrentLocation(false);
+                      setRiderFrom(name);
+                      setRiderFromCoords(null);
+                      setMapPicker(null);
+                    }}
+                    onClose={() => setMapPicker(null)}
+                  />
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={!canConfirmPlanRoute}
+                onClick={() => {
+                  setRoutePreviewReady(true);
+                  setPlanTripOpen(false);
+                }}
+                style={{
+                  ...styles.btn,
+                  marginTop: 16,
+                  opacity: canConfirmPlanRoute ? 1 : 0.45,
+                  cursor: canConfirmPlanRoute ? "pointer" : "not-allowed",
+                }}
+              >
+                确认行程
+              </button>
+            </div>
+          </div>
+      )}
     </div>
   );
 }
