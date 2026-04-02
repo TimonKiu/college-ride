@@ -1,7 +1,38 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { MapContainer, TileLayer, Polyline, CircleMarker, useMap, useMapEvents } from "react-leaflet";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import Map, { Marker, Source, Layer } from "react-map-gl/maplibre";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import "./map.css";
+import { COLLEGE_VECTOR_MAP_STYLE, applyCollegeRoadHierarchy } from "./collegeRoadMapStyle.js";
+
+function UserLocationMarker({ lat, lng }) {
+  if (lat == null || lng == null) return null;
+  return (
+    <Marker longitude={lng} latitude={lat} anchor="bottom">
+      <div
+        className="cr-user-marker-wrap"
+        style={{
+          width: 28,
+          height: 36,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          filter: "drop-shadow(0 2px 5px rgba(0,51,153,0.4))",
+        }}
+      >
+        <svg width="28" height="36" viewBox="0 0 24 34" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+          <path
+            d="M12 2C7.58 2 4 5.58 4 10c0 6.5 8 14 8 14s8-7.5 8-14c0-4.42-3.58-8-8-8z"
+            fill="#003399"
+            stroke="#ffffff"
+            strokeWidth="1.5"
+          />
+          <circle cx="12" cy="10" r="3" fill="#ffffff" />
+        </svg>
+      </div>
+    </Marker>
+  );
+}
 
 /** 登录确定；未接登录前默认 JHU */
 const USER_SCHOOL = "Johns Hopkins University";
@@ -280,6 +311,18 @@ const Icons = {
       <path d="m15 18-6-6 6-6" />
     </Icon>
   ),
+  chevronDown: (
+    <Icon>
+      <path d="m6 9 6 6 6-6" />
+    </Icon>
+  ),
+  /** 出发地「定位到当前位置」小按钮（十字准星） */
+  navigate: (
+    <Icon stroke={1.5}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 5V2M12 22v-3M5 12H2M22 12h-3" />
+    </Icon>
+  ),
   star: (
     <Icon stroke={1.5}>
       <path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7L12 17.8 5.7 21 8 14 2 9.4h7.6L12 2z" />
@@ -358,26 +401,7 @@ const Tag = ({ text, accent = PRIMARY }) => {
   );
 };
 
-function FitBounds({ positions }) {
-  const map = useMap();
-  useEffect(() => {
-    if (positions?.length > 1) {
-      map.fitBounds(L.latLngBounds(positions), { padding: [28, 28], maxZoom: 15 });
-    }
-  }, [map, positions]);
-  return null;
-}
-
-function MapClickLayer({ onPick }) {
-  useMapEvents({
-    click(e) {
-      onPick(e.latlng);
-    },
-  });
-  return null;
-}
-
-function MapPickerPanel({ onPick, onClose, lineColor, center }) {
+function MapPickerPanel({ onPick, onClose, lineColor, center, userLocation }) {
   const c = center ?? [38.9072, -77.0369];
   return (
     <div
@@ -390,20 +414,21 @@ function MapPickerPanel({ onPick, onClose, lineColor, center }) {
         marginBottom: 12,
       }}
     >
-      <MapContainer
+      <Map
         key={`${c[0].toFixed(5)},${c[1].toFixed(5)}`}
-        center={c}
-        zoom={12}
+        mapLib={maplibregl}
+        initialViewState={{ longitude: c[1], latitude: c[0], zoom: 12 }}
+        mapStyle={COLLEGE_VECTOR_MAP_STYLE}
         style={{ height: "100%", width: "100%" }}
-        scrollWheelZoom
+        scrollZoom
+        onLoad={(e) => applyCollegeRoadHierarchy(e.target)}
+        onClick={(ev) => {
+          const { lat, lng } = ev.lngLat;
+          onPick(nearestPlaceName(lat, lng));
+        }}
       >
-        <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <MapClickLayer
-          onPick={(latlng) => {
-            onPick(nearestPlaceName(latlng.lat, latlng.lng));
-          }}
-        />
-      </MapContainer>
+        <UserLocationMarker lat={userLocation?.lat} lng={userLocation?.lng} />
+      </Map>
       <button
         type="button"
         onClick={onClose}
@@ -478,6 +503,8 @@ function PlaceSuggestField({
   wrapperStyle,
   hoverRgb = RIDER_RGB,
   variant = "light",
+  onFocus: onFocusProp,
+  onBlur: onBlurProp,
 }) {
   const dark = variant === "dark";
   const wrapRef = useRef(null);
@@ -573,7 +600,13 @@ function PlaceSuggestField({
         spellCheck={false}
         value={value}
         onChange={handleInputChange}
-        onFocus={() => setOpen(true)}
+        onFocus={(e) => {
+          onFocusProp?.(e);
+          setOpen(true);
+        }}
+        onBlur={(e) => {
+          onBlurProp?.(e);
+        }}
         placeholder={placeholder}
         className={dark ? "cr-plan-input-dark" : undefined}
         style={{
@@ -641,7 +674,7 @@ function PlaceSuggestField({
             })}
           {!loading && items.length === 0 && (
             <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, lineHeight: 1.45 }}>
-              未找到匹配地点，可继续手动输入或从地图选择
+              未找到匹配地点，可继续手动输入
             </li>
           )}
         </ul>
@@ -650,12 +683,139 @@ function PlaceSuggestField({
   );
 }
 
-function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY }) {
+const WEEKDAYS_CN = ["日", "一", "二", "三", "四", "五", "六"];
+
+function formatCnDateLabel(d) {
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS_CN[d.getDay()]}`;
+}
+
+function sameCalendarDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function buildDateOptions(daysAhead = 60) {
+  const n = new Date();
+  const start = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  const out = [];
+  for (let i = 0; i < daysAhead; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    out.push(d);
+  }
+  return out;
+}
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => i);
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => i);
+
+function defaultWheelEquals(a, b) {
+  return a === b;
+}
+
+function WheelScrollColumn({ label, options, value, onChange, format, equals }) {
+  const scrollRef = useRef(null);
+  const ITEM_H = 40;
+  const VISIBLE = 216;
+  const PAD = (VISIBLE - ITEM_H) / 2;
+  const isEqual = equals ?? defaultWheelEquals;
+
+  const indexOfValue = useCallback(() => options.findIndex((o) => isEqual(o, value)), [options, value, isEqual]);
+
+  const syncScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const idx = indexOfValue();
+    if (idx >= 0) el.scrollTop = PAD + idx * ITEM_H;
+  }, [indexOfValue, PAD]);
+
+  useEffect(() => {
+    syncScroll();
+  }, [value, options, syncScroll]);
+
+  const handleScroll = (e) => {
+    const el = e.target;
+    const idx = Math.round((el.scrollTop - PAD) / ITEM_H);
+    const clamped = Math.max(0, Math.min(options.length - 1, idx));
+    const next = options[clamped];
+    if (next !== undefined && !isEqual(next, value)) onChange(next);
+  };
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 }}>
+      <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 8, fontWeight: 600 }}>{label}</div>
+      <div
+        style={{
+          position: "relative",
+          width: "100%",
+          height: VISIBLE,
+          borderRadius: 12,
+          background: "rgba(0,0,0,0.22)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            height: ITEM_H,
+            borderTop: "1px solid rgba(255,255,255,0.2)",
+            borderBottom: "1px solid rgba(255,255,255,0.2)",
+            zIndex: 1,
+          }}
+        />
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          style={{
+            height: VISIBLE,
+            overflowY: "auto",
+            scrollSnapType: "y mandatory",
+            WebkitOverflowScrolling: "touch",
+            position: "relative",
+            zIndex: 0,
+          }}
+        >
+          <div style={{ paddingTop: PAD, paddingBottom: PAD }}>
+            {options.map((opt, i) => (
+              <div
+                key={opt instanceof Date ? opt.getTime() : `${i}-${opt}`}
+                style={{
+                  height: ITEM_H,
+                  scrollSnapAlign: "center",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: "rgba(255,255,255,0.95)",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                }}
+              >
+                {format(opt)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY, userLocation }) {
+  const mapRef = useRef(null);
   const [path, setPath] = useState(() => [
     [fromLat, fromLng],
     [toLat, toLng],
   ]);
   const [loading, setLoading] = useState(true);
+  const userNearFrom =
+    userLocation != null &&
+    approxKm(userLocation.lat, userLocation.lng, fromLat, fromLng) * 1000 < 50;
 
   useEffect(() => {
     let cancelled = false;
@@ -685,6 +845,28 @@ function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY }) {
 
   const center = [(fromLat + toLat) / 2, (fromLng + toLng) / 2];
 
+  useEffect(() => {
+    const map = mapRef.current?.getMap?.();
+    if (!map || path.length < 2) return;
+    const b = new maplibregl.LngLatBounds();
+    path.forEach(([lat, lng]) => b.extend([lng, lat]));
+    const run = () => map.fitBounds(b, { padding: [28, 28], maxZoom: 15 });
+    if (map.loaded()) run();
+    else map.once("load", run);
+  }, [path]);
+
+  const routeGeoJson = useMemo(
+    () => ({
+      type: "Feature",
+      properties: {},
+      geometry: {
+        type: "LineString",
+        coordinates: path.map(([lat, lng]) => [lng, lat]),
+      },
+    }),
+    [path]
+  );
+
   return (
     <div style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid #dce3ed" }}>
       {loading && (
@@ -693,25 +875,63 @@ function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY }) {
             position: "absolute",
             zIndex: 500,
             inset: 0,
-            background: "rgba(255,255,255,0.88)",
+            background: "rgba(0,0,0,0.4)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             fontSize: 12,
-            color: "#64748b",
+            color: "#cbd5e1",
             fontWeight: 500,
           }}
         >
           加载路线中…
         </div>
       )}
-      <MapContainer key={`${fromLat},${fromLng}-${toLat},${toLng}`} center={center} zoom={12} style={{ height: 200, width: "100%" }} scrollWheelZoom={false}>
-        <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        <Polyline positions={path} pathOptions={{ color: lineColor, weight: 3, opacity: 0.9 }} />
-        <CircleMarker center={[fromLat, fromLng]} radius={7} pathOptions={{ color: lineColor, fillColor: "#fff", fillOpacity: 1, weight: 2 }} />
-        <CircleMarker center={[toLat, toLng]} radius={7} pathOptions={{ color: lineColor, fillColor: "#fff", fillOpacity: 1, weight: 2 }} />
-        <FitBounds positions={path} />
-      </MapContainer>
+      <Map
+        ref={mapRef}
+        mapLib={maplibregl}
+        key={`${fromLat},${fromLng}-${toLat},${toLng}`}
+        initialViewState={{ longitude: center[1], latitude: center[0], zoom: 12 }}
+        mapStyle={COLLEGE_VECTOR_MAP_STYLE}
+        style={{ height: 200, width: "100%" }}
+        scrollZoom={false}
+        onLoad={(e) => applyCollegeRoadHierarchy(e.target)}
+      >
+        <Source id="cr-trip-route" type="geojson" data={routeGeoJson}>
+          <Layer
+            id="cr-trip-route-line"
+            type="line"
+            paint={{ "line-color": lineColor, "line-width": 3, "line-opacity": 0.9 }}
+          />
+        </Source>
+        {!userNearFrom && (
+          <Marker longitude={fromLng} latitude={fromLat} anchor="center">
+            <div
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: "50%",
+                background: "#fff",
+                border: `2px solid ${lineColor}`,
+                boxSizing: "border-box",
+              }}
+            />
+          </Marker>
+        )}
+        <Marker longitude={toLng} latitude={toLat} anchor="center">
+          <div
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              background: "#fff",
+              border: `2px solid ${lineColor}`,
+              boxSizing: "border-box",
+            }}
+          />
+        </Marker>
+        {userLocation && <UserLocationMarker lat={userLocation.lat} lng={userLocation.lng} />}
+      </Map>
     </div>
   );
 }
@@ -748,6 +968,25 @@ export default function CollegeRide() {
   const [publishFrom, setPublishFrom] = useState("");
   const [publishTo, setPublishTo] = useState("");
   const [mapPicker, setMapPicker] = useState(null);
+  /** 规划层内「立即接载」：下拉菜单与预约时间 */
+  const [pickupTimeMenuOpen, setPickupTimeMenuOpen] = useState(false);
+  const [pickupTimeMenuExpanded, setPickupTimeMenuExpanded] = useState(false);
+  const [pickupTimeMode, setPickupTimeMode] = useState("immediate");
+  const [scheduledPickupDate, setScheduledPickupDate] = useState(() => {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  });
+  const [scheduledHour, setScheduledHour] = useState(() => new Date().getHours());
+  const [scheduledMinute, setScheduledMinute] = useState(() => new Date().getMinutes());
+
+  const dateOptionsForWheel = useMemo(() => buildDateOptions(60), []);
+
+  const resetScheduleToNow = useCallback(() => {
+    const n = new Date();
+    setScheduledPickupDate(new Date(n.getFullYear(), n.getMonth(), n.getDate()));
+    setScheduledHour(n.getHours());
+    setScheduledMinute(n.getMinutes());
+  }, []);
 
   useEffect(() => {
     if (role === "rider" && tab === "post") setTab("find");
@@ -759,6 +998,14 @@ export default function CollegeRide() {
 
   useEffect(() => {
     if (!planTripOpen) setMapPicker(null);
+  }, [planTripOpen]);
+
+  useEffect(() => {
+    if (!planTripOpen) {
+      setPickupTimeMenuOpen(false);
+      setPickupTimeMenuExpanded(false);
+      setPickupTimeMode("immediate");
+    }
   }, [planTripOpen]);
 
   const campusesForSelect = useMemo(() => {
@@ -861,6 +1108,52 @@ export default function CollegeRide() {
     () => Boolean(riderToCoords && effectiveFromLatLng && (fromUseCurrentLocation ? true : riderFromCoords)),
     [riderToCoords, effectiveFromLatLng, fromUseCurrentLocation, riderFromCoords]
   );
+
+  const snapOriginToCurrentLocation = useCallback(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng });
+      setFromUseCurrentLocation(true);
+      setRiderFrom("");
+      setRiderFromCoords(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCurrentLocationCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setFromUseCurrentLocation(true);
+        setRiderFrom("");
+        setRiderFromCoords(null);
+      },
+      () => {
+        setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng });
+        setFromUseCurrentLocation(true);
+        setRiderFrom("");
+        setRiderFromCoords(null);
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+    );
+  }, [activeCampus.lat, activeCampus.lng]);
+
+  const handleRiderFromChange = (v) => {
+    setRiderFrom(v);
+    if (!v.trim()) setRiderFromCoords(null);
+  };
+
+  const onOriginInputFocus = () => {
+    if (fromUseCurrentLocation) {
+      setFromUseCurrentLocation(false);
+      setRiderFrom("");
+      setRiderFromCoords(null);
+    }
+  };
+
+  const onOriginInputBlur = () => {
+    if (!riderFrom.trim()) {
+      setFromUseCurrentLocation(true);
+      setRiderFrom("");
+      setRiderFromCoords(null);
+    }
+  };
 
   const matchedRides = useMemo(() => {
     const MAX_KM = 40;
@@ -1213,6 +1506,7 @@ export default function CollegeRide() {
               toLat={selectedRide.toLat}
               toLng={selectedRide.toLng}
               lineColor={themePrimary}
+              userLocation={currentLocationCoords}
             />
             <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
           </div>
@@ -1326,7 +1620,14 @@ export default function CollegeRide() {
 
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>路线地图</div>
-            <TripRouteMap fromLat={req.fromLat} fromLng={req.fromLng} toLat={req.toLat} toLng={req.toLng} lineColor={themePrimary} />
+            <TripRouteMap
+              fromLat={req.fromLat}
+              fromLng={req.fromLng}
+              toLat={req.toLat}
+              toLng={req.toLng}
+              lineColor={themePrimary}
+              userLocation={currentLocationCoords}
+            />
             <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
           </div>
 
@@ -1709,27 +2010,53 @@ export default function CollegeRide() {
                   <div style={{ width: 8, height: 8, background: colors.navy, borderRadius: 2 }} />
                 </div>
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPlanTripFocus("from");
-                      setPlanTripOpen(true);
-                    }}
-                    style={{
-                      flex: 1,
-                      textAlign: "left",
-                      padding: "14px 12px",
-                      border: "none",
-                      background: "transparent",
-                      cursor: "pointer",
-                      fontSize: 15,
-                      fontWeight: 600,
-                      color: colors.text,
-                      fontFamily: "'Inter', system-ui, sans-serif",
-                    }}
-                  >
-                    {fromUseCurrentLocation ? "当前位置" : riderFrom || "输入出发地"}
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", minHeight: 48 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlanTripFocus("from");
+                        setPlanTripOpen(true);
+                      }}
+                      style={{
+                        flex: 1,
+                        textAlign: "left",
+                        padding: "14px 8px 14px 12px",
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: colors.text,
+                        fontFamily: "'Inter', system-ui, sans-serif",
+                      }}
+                    >
+                      {fromUseCurrentLocation ? "当前位置" : riderFrom || "输入出发地"}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="将出发地设为当前位置"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        snapOriginToCurrentLocation();
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        width: 40,
+                        height: 40,
+                        marginRight: 4,
+                        border: "none",
+                        borderRadius: 10,
+                        background: "transparent",
+                        color: colors.navy,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <span style={{ display: "flex" }}>{Icons.navigate}</span>
+                    </button>
+                  </div>
                   <div style={{ height: 1, background: colors.border }} />
                   <button
                     type="button"
@@ -1763,6 +2090,7 @@ export default function CollegeRide() {
                     toLat={riderToCoords.lat}
                     toLng={riderToCoords.lng}
                     lineColor={themePrimary}
+                    userLocation={currentLocationCoords}
                   />
                 </div>
               )}
@@ -1942,6 +2270,7 @@ export default function CollegeRide() {
                 <MapPickerPanel
                   lineColor={colors.navy}
                   center={mapPickerCenter}
+                  userLocation={currentLocationCoords}
                   onPick={(name) => {
                     setPublishFrom(name);
                     setMapPicker(null);
@@ -2115,16 +2444,198 @@ export default function CollegeRide() {
               background: "#000",
             }}
           >
+            {pickupTimeMenuOpen && (
+              <>
+                <div
+                  role="presentation"
+                  aria-hidden
+                  onClick={() => {
+                    setPickupTimeMenuOpen(false);
+                    setPickupTimeMenuExpanded(false);
+                  }}
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.5)",
+                    zIndex: 100001,
+                  }}
+                />
+                <div
+                  style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: pickupTimeMenuExpanded ? "75vh" : "33.333vh",
+                    zIndex: 100002,
+                    background: themePrimary,
+                    borderRadius: "0 0 20px 20px",
+                    boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
+                    display: "flex",
+                    flexDirection: "column",
+                    paddingTop: "max(12px, env(safe-area-inset-top))",
+                    paddingLeft: 16,
+                    paddingRight: 16,
+                    paddingBottom: "max(14px, env(safe-area-inset-bottom))",
+                    color: "#fff",
+                    overflow: "hidden",
+                    transition: "height 0.22s ease-out",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {!pickupTimeMenuExpanded ? (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.88, marginBottom: 12 }}>接载时间</div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPickupTimeMode("immediate");
+                          setPickupTimeMenuOpen(false);
+                          setPickupTimeMenuExpanded(false);
+                          setPlanTripOpen(false);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "14px 16px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.35)",
+                          background: "rgba(255,255,255,0.12)",
+                          color: "#fff",
+                          fontSize: 16,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          marginBottom: 10,
+                          textAlign: "left",
+                          fontFamily: "'Inter', system-ui, sans-serif",
+                        }}
+                      >
+                        立即接载
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetScheduleToNow();
+                          setPickupTimeMenuExpanded(true);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "14px 16px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(255,255,255,0.35)",
+                          background: "rgba(255,255,255,0.08)",
+                          color: "#fff",
+                          fontSize: 16,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          fontFamily: "'Inter', system-ui, sans-serif",
+                        }}
+                      >
+                        规划行程
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          aria-label="返回"
+                          onClick={() => setPickupTimeMenuExpanded(false)}
+                          style={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: 10,
+                            border: "none",
+                            background: "rgba(0,0,0,0.2)",
+                            color: "#fff",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
+                        </button>
+                        <span style={{ fontWeight: 600, fontSize: 16 }}>选择出发时间</span>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flex: 1,
+                          minHeight: 0,
+                          alignItems: "stretch",
+                          overflow: "hidden",
+                          marginBottom: 12,
+                        }}
+                      >
+                        <WheelScrollColumn
+                          label="日期"
+                          options={dateOptionsForWheel}
+                          value={scheduledPickupDate}
+                          onChange={setScheduledPickupDate}
+                          format={formatCnDateLabel}
+                          equals={sameCalendarDay}
+                        />
+                        <WheelScrollColumn
+                          label="小时"
+                          options={HOUR_OPTIONS}
+                          value={scheduledHour}
+                          onChange={setScheduledHour}
+                          format={(h) => `${h} 时`}
+                        />
+                        <WheelScrollColumn
+                          label="分钟"
+                          options={MINUTE_OPTIONS}
+                          value={scheduledMinute}
+                          onChange={setScheduledMinute}
+                          format={(m) => `${String(m).padStart(2, "0")} 分`}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPickupTimeMode("scheduled");
+                          setPickupTimeMenuOpen(false);
+                          setPickupTimeMenuExpanded(false);
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "14px 16px",
+                          borderRadius: 12,
+                          border: "none",
+                          background: "rgba(255,255,255,0.95)",
+                          color: themePrimary,
+                          fontSize: 16,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          fontFamily: "'Inter', system-ui, sans-serif",
+                        }}
+                      >
+                        完成
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
             <div style={{ flex: 1, minHeight: 0, position: "relative", height: "100vh" }}>
-              <MapContainer
+              <Map
                 key={`plan-${planModalMapCenter.lat}-${planModalMapCenter.lng}`}
-                center={[planModalMapCenter.lat, planModalMapCenter.lng]}
-                zoom={13}
+                mapLib={maplibregl}
+                initialViewState={{
+                  longitude: planModalMapCenter.lng,
+                  latitude: planModalMapCenter.lat,
+                  zoom: 13,
+                }}
+                mapStyle={COLLEGE_VECTOR_MAP_STYLE}
                 style={{ height: "100%", width: "100%", zIndex: 0 }}
-                scrollWheelZoom
+                scrollZoom
+                onLoad={(e) => applyCollegeRoadHierarchy(e.target)}
               >
-                <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              </MapContainer>
+                <UserLocationMarker lat={currentLocationCoords?.lat} lng={currentLocationCoords?.lng} />
+              </Map>
               <div
                 style={{
                   position: "absolute",
@@ -2191,14 +2702,24 @@ export default function CollegeRide() {
               <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
                 <button
                   type="button"
+                  onClick={() => {
+                    setPickupTimeMenuOpen((open) => {
+                      const next = !open;
+                      if (next) setPickupTimeMenuExpanded(false);
+                      return next;
+                    });
+                  }}
+                  aria-expanded={pickupTimeMenuOpen}
+                  aria-haspopup="dialog"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 6,
+                    maxWidth: "100%",
                     padding: "8px 14px",
                     borderRadius: 999,
                     border: "1px solid rgba(255,255,255,0.35)",
-                    background: "rgba(255,255,255,0.1)",
+                    background: pickupTimeMenuOpen ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.1)",
                     color: "rgba(255,255,255,0.95)",
                     fontSize: 13,
                     fontWeight: 600,
@@ -2206,9 +2727,22 @@ export default function CollegeRide() {
                     fontFamily: "'Inter', system-ui, sans-serif",
                   }}
                 >
-                  <span style={{ display: "flex" }}>{Icons.clock}</span>
-                  立即接载
-                  <span style={{ opacity: 0.7, fontSize: 10 }}>▾</span>
+                  <span style={{ display: "flex", flexShrink: 0 }}>{Icons.clock}</span>
+                  <span
+                    style={{
+                      flexShrink: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      textAlign: "left",
+                    }}
+                  >
+                    {pickupTimeMode === "scheduled"
+                      ? `${formatCnDateLabel(scheduledPickupDate)} ${String(scheduledHour).padStart(2, "0")}:${String(scheduledMinute).padStart(2, "0")}`
+                      : "立即接载"}
+                  </span>
+                  <span style={{ display: "flex", flexShrink: 0, marginLeft: 2, opacity: 0.92 }}>{Icons.chevronDown}</span>
                 </button>
                 <button
                   type="button"
@@ -2262,36 +2796,15 @@ export default function CollegeRide() {
                     <div style={{ width: 8, height: 8, background: "#fff", borderRadius: 2 }} />
                   </div>
                   <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-                    <div style={{ flex: 1, minHeight: 48, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                      {fromUseCurrentLocation ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFromUseCurrentLocation(false);
-                            setRiderFrom("");
-                            setRiderFromCoords(null);
-                          }}
-                          style={{
-                            width: "100%",
-                            textAlign: "left",
-                            padding: "10px 10px 10px 8px",
-                            border: "none",
-                            background: "transparent",
-                            color: "rgba(255,255,255,0.95)",
-                            fontSize: 15,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            fontFamily: "'Inter', system-ui, sans-serif",
-                          }}
-                        >
-                          当前位置
-                        </button>
-                      ) : (
+                    <div style={{ flex: 1, minHeight: 48, display: "flex", alignItems: "stretch" }}>
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "center" }}>
                         <PlaceSuggestField
-                          value={riderFrom}
-                          onChange={setRiderFrom}
+                          value={fromUseCurrentLocation ? "" : riderFrom}
+                          onChange={handleRiderFromChange}
                           onCoordsChange={setRiderFromCoords}
-                          placeholder="搜索出发地"
+                          onFocus={onOriginInputFocus}
+                          onBlur={onOriginInputBlur}
+                          placeholder={fromUseCurrentLocation ? "当前位置" : "搜索出发地"}
                           variant="dark"
                           icon={
                             <span
@@ -2319,7 +2832,30 @@ export default function CollegeRide() {
                             marginBottom: 0,
                           }}
                         />
-                      )}
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="将出发地设为当前位置"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          snapOriginToCurrentLocation();
+                        }}
+                        style={{
+                          flexShrink: 0,
+                          width: 44,
+                          alignSelf: "stretch",
+                          border: "none",
+                          borderLeft: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.06)",
+                          color: "rgba(255,255,255,0.92)",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <span style={{ display: "flex" }}>{Icons.navigate}</span>
+                      </button>
                     </div>
                     <div style={{ height: 1, background: "rgba(255,255,255,0.12)" }} />
                     <div style={{ flex: 1, minHeight: 52 }}>
@@ -2379,68 +2915,6 @@ export default function CollegeRide() {
                   <span style={{ display: "flex" }}>{Icons.plus}</span>
                 </button>
               </div>
-
-              {!fromUseCurrentLocation && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFromUseCurrentLocation(true);
-                    setRiderFrom("");
-                    setRiderFromCoords(null);
-                  }}
-                  style={{
-                    marginTop: 10,
-                    padding: 0,
-                    border: "none",
-                    background: "none",
-                    color: "rgba(255,255,255,0.65)",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    fontFamily: "'Inter', system-ui, sans-serif",
-                  }}
-                >
-                  使用当前位置作为出发地
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setMapPicker((p) => (p === "rider-from" ? null : "rider-from"))}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  marginTop: 12,
-                  padding: "4px 0",
-                  border: "none",
-                  background: "none",
-                  color: "rgba(255,255,255,0.85)",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                }}
-              >
-                <span style={{ display: "flex" }}>{Icons.mapPath}</span>
-                从地图选择出发地
-              </button>
-
-              {mapPicker === "rider-from" && (
-                <div style={{ position: "relative", zIndex: 20, marginTop: 10 }}>
-                  <MapPickerPanel
-                    lineColor={themePrimary}
-                    center={mapPickerCenter}
-                    onPick={(name) => {
-                      setFromUseCurrentLocation(false);
-                      setRiderFrom(name);
-                      setRiderFromCoords(null);
-                      setMapPicker(null);
-                    }}
-                    onClose={() => setMapPicker(null)}
-                  />
-                </div>
-              )}
 
               <button
                 type="button"
