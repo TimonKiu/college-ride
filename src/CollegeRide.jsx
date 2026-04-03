@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import Map, { Marker, Source, Layer } from "react-map-gl/maplibre";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -102,23 +103,18 @@ function loadScheduleEntriesFromStorage() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((e) => {
-      if (
-        !e ||
-        typeof e.id !== "string" ||
-        typeof e.weekday !== "number" ||
-        e.weekday < 0 ||
-        e.weekday > 6 ||
-        typeof e.minutes !== "number" ||
-        typeof e.toLabel !== "string" ||
-        typeof e.toLat !== "number" ||
-        typeof e.toLng !== "number"
-      ) {
-        return false;
-      }
-      if (e.returnMinutes != null && typeof e.returnMinutes !== "number") return false;
-      return true;
-    });
+    return parsed.filter(
+      (e) =>
+        e &&
+        typeof e.id === "string" &&
+        typeof e.weekday === "number" &&
+        e.weekday >= 0 &&
+        e.weekday <= 6 &&
+        typeof e.minutes === "number" &&
+        typeof e.toLabel === "string" &&
+        typeof e.toLat === "number" &&
+        typeof e.toLng === "number"
+    );
   } catch {
     return [];
   }
@@ -137,6 +133,86 @@ function formatScheduleMinutes(minutes) {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** 一周表格内：只显示楼/店/公寓/校区等简称（取逗号前一段，过长截断） */
+function shortSchedulePlaceName(raw, { fallback = "地点" } = {}) {
+  if (raw == null) return fallback;
+  const s = String(raw).trim();
+  if (!s) return fallback;
+  const first = s.split(/[,，]/)[0].trim();
+  const chunk = first || s;
+  const max = 20;
+  if (chunk.length <= max) return chunk;
+  return `${chunk.slice(0, max)}…`;
+}
+
+/** 一周安排纵轴：默认 6:00–23:00；若有更早/更晚的行程则扩展行 */
+const DEFAULT_SCHEDULE_GRID_START_MIN = 6 * 60;
+const DEFAULT_SCHEDULE_GRID_END_MIN = 23 * 60;
+
+function getScheduleWeekGridBounds(entries) {
+  const defaultStart = DEFAULT_SCHEDULE_GRID_START_MIN;
+  const defaultEnd = DEFAULT_SCHEDULE_GRID_END_MIN;
+  let minM = Infinity;
+  let maxM = -Infinity;
+  for (const e of entries) {
+    if (e && typeof e.minutes === "number" && !Number.isNaN(e.minutes)) {
+      minM = Math.min(minM, e.minutes);
+      maxM = Math.max(maxM, e.minutes);
+    }
+    if (e?.returnEnabled && typeof e.returnMinutes === "number" && !Number.isNaN(e.returnMinutes)) {
+      minM = Math.min(minM, e.returnMinutes);
+      maxM = Math.max(maxM, e.returnMinutes);
+    }
+  }
+  if (minM === Infinity) {
+    return { rowStartMin: defaultStart, rowEndMin: defaultEnd };
+  }
+  const rowStartMin = Math.min(defaultStart, Math.floor(minM / 60) * 60);
+  const rowEndMin = Math.max(defaultEnd, Math.ceil(maxM / 60) * 60);
+  return { rowStartMin, rowEndMin: Math.min(rowEndMin, 24 * 60 - 1) };
+}
+
+function buildHourSlotStarts(rowStartMin, rowEndMin) {
+  const out = [];
+  for (let t = rowStartMin; t <= rowEndMin; t += 60) {
+    out.push(t);
+  }
+  return out;
+}
+
+function scheduleEntryInHourSlot(entry, slotStartMin) {
+  return (
+    entry &&
+    typeof entry.minutes === "number" &&
+    !Number.isNaN(entry.minutes) &&
+    entry.minutes >= slotStartMin &&
+    entry.minutes < slotStartMin + 60
+  );
+}
+
+function scheduleReturnInHourSlot(entry, slotStartMin) {
+  return (
+    entry?.returnEnabled &&
+    typeof entry.returnMinutes === "number" &&
+    !Number.isNaN(entry.returnMinutes) &&
+    entry.returnMinutes >= slotStartMin &&
+    entry.returnMinutes < slotStartMin + 60
+  );
+}
+
+/** 常用路线：时间可选；未存 timeEnabled 的旧数据视为已设时间 */
+function getCommonRouteTimeFields(trip) {
+  const timeEnabled = trip.timeEnabled !== false;
+  return {
+    timeEnabled,
+    outHour: typeof trip.outHour === "number" && trip.outHour >= 0 && trip.outHour < 24 ? trip.outHour : 8,
+    outMinute: typeof trip.outMinute === "number" && trip.outMinute >= 0 && trip.outMinute < 60 ? trip.outMinute : 0,
+    returnEnabled: !!trip.returnEnabled,
+    returnHour: typeof trip.returnHour === "number" && trip.returnHour >= 0 && trip.returnHour < 24 ? trip.returnHour : 18,
+    returnMinute: typeof trip.returnMinute === "number" && trip.returnMinute >= 0 && trip.returnMinute < 60 ? trip.returnMinute : 0,
+  };
 }
 
 const DC_AREA_POINTS = {
@@ -160,6 +236,78 @@ const BAL_AREA_POINTS = {
 };
 
 const PICKER_AREA_POINTS = { ...DC_AREA_POINTS, ...BAL_AREA_POINTS };
+
+/** 合并多路 Photon 结果并去重（同一点多语言会重复） */
+function mergePhotonFeatureLists(featuresArrays) {
+  const seen = new Set();
+  const out = [];
+  for (const arr of featuresArrays) {
+    if (!Array.isArray(arr)) continue;
+    for (const f of arr) {
+      const c = f?.geometry?.coordinates;
+      const p = f?.properties || {};
+      const name = p.name || p.street || "";
+      const key =
+        c?.length >= 2
+          ? `${Math.round(c[0] * 1e5) / 1e5}:${Math.round(c[1] * 1e5) / 1e5}:${String(name)}`
+          : `n:${JSON.stringify(p)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(f);
+    }
+  }
+  return out;
+}
+
+/**
+ * Photon 多语言 + 可选 lat/lon 偏置；美国真实地址用 lang=en 更准，与 zh 合并。
+ * 有偏置时额外请求无偏置结果，避免漏掉稍远但名称更匹配的 POI。
+ */
+async function photonSearch(q, { lat, lon, signal } = {}) {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) return [];
+  const limit = 15;
+  const qenc = encodeURIComponent(trimmed);
+  const bias =
+    lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon) ? `&lat=${lat}&lon=${lon}` : "";
+  const langs = ["en", "zh"];
+  const urls = [];
+  for (const lang of langs) {
+    urls.push(`https://photon.komoot.io/api/?q=${qenc}&limit=${limit}&lang=${lang}${bias}`);
+  }
+  if (bias) {
+    for (const lang of langs) {
+      urls.push(`https://photon.komoot.io/api/?q=${qenc}&limit=${limit}&lang=${lang}`);
+    }
+  }
+  const results = await Promise.all(
+    urls.map((url) =>
+      fetch(url, { signal })
+        .then((r) => (r.ok ? r.json() : { features: [] }))
+        .catch(() => ({ features: [] }))
+    )
+  );
+  return mergePhotonFeatureLists(results.map((d) => d.features || [])).slice(0, 15);
+}
+
+/** 仅文本时保存：与输入框同源的多路 Photon，取第一条 */
+async function geocodePhotonFirst(query, bias = {}) {
+  const q = query.trim();
+  if (q.length < 2) return null;
+  try {
+    const features = await photonSearch(q, bias);
+    const feat = features[0];
+    const c = feat?.geometry?.coordinates;
+    if (c?.length >= 2) {
+      const lat = Number(c[1]);
+      const lng = Number(c[0]);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 function nearestPlaceName(lat, lng) {
   let best = null;
@@ -416,6 +564,14 @@ const Icons = {
       <path d="M12 2l2.4 7.4H22l-6 4.6 2.3 7L12 17.8 5.7 21 8 14 2 9.4h7.6L12 2z" />
     </Icon>
   ),
+  trash: (
+    <Icon title="删除" size={14} stroke={1.65}>
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M10 11v6M14 11v6" />
+    </Icon>
+  ),
 };
 
 const RIDER_PRIMARY = "#003399";
@@ -559,16 +715,21 @@ function MapPickerPanel({ onPick, onClose, lineColor, center, userLocation }) {
   );
 }
 
-/** Photon（OSM）地点展示为一行可读地址 */
+/** Photon（OSM）地点展示为一行可读地址（兼容美国门牌/州缩写） */
 function formatPhotonFeature(f) {
   const p = f.properties || {};
   const parts = [];
+  const hn = p.housenumber || p.house_number;
+  const st = p.street;
   if (p.name) parts.push(p.name);
-  if (p.housenumber && p.street) parts.push(`${p.housenumber} ${p.street}`);
-  else if (p.street) parts.push(p.street);
-  const city = p.city || p.town || p.village || p.district;
+  if (hn && st) parts.push(`${hn} ${st}`);
+  else if (st) parts.push(st);
+  else if (hn) parts.push(String(hn));
+  const city = p.city || p.town || p.village || p.district || p.locality;
   if (city) parts.push(city);
-  if (p.state) parts.push(p.state);
+  const region = p.state || p.region;
+  if (region) parts.push(region);
+  if (p.postcode) parts.push(p.postcode);
   if (p.country) parts.push(p.country);
   if (parts.length) return [...new Set(parts)].join(", ");
   const c = f.geometry?.coordinates;
@@ -594,17 +755,25 @@ function PlaceSuggestField({
   onFocus: onFocusProp,
   onBlur: onBlurProp,
   inputId,
+  /** 优先展示附近的楼/店/路口（与 Photon lat/lon 偏置一致） */
+  biasLat,
+  biasLng,
 }) {
   const dark = variant === "dark";
   const wrapRef = useRef(null);
+  const listRef = useRef(null);
   const timerRef = useRef(null);
   const abortRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState([]);
+  /** 规划层等 overflow 容器会裁切 absolute 下拉，深色模式用 body portal + fixed */
+  const [fixedListPos, setFixedListPos] = useState(null);
+
+  const q = value.trim();
+  const showDropdown = open && q.length >= 2;
 
   useEffect(() => {
-    const q = value.trim();
     if (timerRef.current) clearTimeout(timerRef.current);
     if (abortRef.current) abortRef.current.abort();
 
@@ -618,37 +787,62 @@ function PlaceSuggestField({
     abortRef.current = ac;
     setLoading(true);
 
+    const lat =
+      typeof biasLat === "number" && Number.isFinite(biasLat) ? biasLat : undefined;
+    const lon =
+      typeof biasLng === "number" && Number.isFinite(biasLng) ? biasLng : undefined;
+
     timerRef.current = setTimeout(async () => {
       try {
-        const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lang=zh`;
-        const res = await fetch(url, { signal: ac.signal });
-        if (!res.ok) {
-          if (!ac.signal.aborted) setItems([]);
-          return;
-        }
-        const data = await res.json();
-        if (!ac.signal.aborted) setItems(Array.isArray(data.features) ? data.features : []);
+        const features = await photonSearch(q, { lat, lon, signal: ac.signal });
+        if (!ac.signal.aborted) setItems(features);
       } catch (e) {
         if (e.name !== "AbortError" && !ac.signal.aborted) setItems([]);
       } finally {
         if (!ac.signal.aborted) setLoading(false);
       }
-    }, 380);
+    }, 320);
 
     return () => {
       clearTimeout(timerRef.current);
       ac.abort();
     };
-  }, [value]);
+  }, [q, biasLat, biasLng]);
 
   useEffect(() => {
     if (!open) return;
     const down = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+      const t = e.target;
+      if (wrapRef.current?.contains(t)) return;
+      if (listRef.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", down);
     return () => document.removeEventListener("mousedown", down);
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!dark || !showDropdown) {
+      setFixedListPos(null);
+      return;
+    }
+    const update = () => {
+      const wrap = wrapRef.current;
+      if (!wrap) return;
+      const r = wrap.getBoundingClientRect();
+      const gap = 4;
+      const margin = 8;
+      const maxH = Math.min(300, Math.max(80, window.innerHeight - r.bottom - gap - margin));
+      setFixedListPos({ left: r.left, top: r.bottom + gap, width: r.width, maxH });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [dark, showDropdown, value, items.length]);
 
   const handlePick = (feat) => {
     const label = formatPhotonFeature(feat);
@@ -666,12 +860,55 @@ function PlaceSuggestField({
     setOpen(true);
   };
 
-  const q = value.trim();
-  const showDropdown = open && q.length >= 2;
   const listBg = dark ? "rgba(22,22,28,0.98)" : "#fff";
   const listBorder = dark ? "rgba(255,255,255,0.18)" : borderColor;
   const rowText = dark ? "#f1f5f9" : "#0a0a0a";
   const mutedText = dark ? "rgba(148,163,184,0.95)" : "#64748b";
+
+  const suggestionList = (
+    <>
+      {loading && (
+        <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, fontWeight: 500 }}>搜索中…</li>
+      )}
+      {!loading &&
+        items.map((feat, i) => {
+          const label = formatPhotonFeature(feat);
+          const key = `${feat.properties?.osm_id ?? ""}-${feat.geometry?.coordinates?.join(",") ?? i}-${i}`;
+          return (
+            <li
+              key={key}
+              role="option"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                handlePick(feat);
+              }}
+              style={{
+                padding: "9px 12px",
+                fontSize: 13,
+                color: rowText,
+                cursor: "pointer",
+                lineHeight: 1.35,
+                fontWeight: 500,
+                borderBottom: i < items.length - 1 ? (dark ? "1px solid rgba(255,255,255,0.08)" : "1px solid #f1f5f9") : "none",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = `rgba(${hoverRgb}, ${dark ? 0.18 : 0.08})`;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+            >
+              {label}
+            </li>
+          );
+        })}
+      {!loading && items.length === 0 && (
+        <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, lineHeight: 1.45 }}>
+          暂无结果。可换英文关键词、加城市/州（如 Baltimore MD），或稍小的区域名再试。
+        </li>
+      )}
+    </>
+  );
 
   return (
     <div
@@ -706,8 +943,9 @@ function PlaceSuggestField({
           background: dark ? "transparent" : undefined,
         }}
       />
-      {showDropdown && (
+      {showDropdown && !dark && (
         <ul
+          ref={listRef}
           role="listbox"
           style={{
             position: "absolute",
@@ -717,58 +955,48 @@ function PlaceSuggestField({
             marginTop: 4,
             marginBottom: 0,
             padding: "4px 0",
-            maxHeight: 220,
+            maxHeight: 300,
             overflowY: "auto",
             borderRadius: 10,
             border: `1px solid ${listBorder}`,
             background: listBg,
-            boxShadow: dark ? "0 12px 32px rgba(0,0,0,0.45)" : "0 10px 28px rgba(0,0,0,0.12)",
+            boxShadow: "0 10px 28px rgba(0,0,0,0.12)",
             zIndex: 80,
             listStyle: "none",
           }}
         >
-          {loading && (
-            <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, fontWeight: 500 }}>搜索中…</li>
-          )}
-          {!loading &&
-            items.map((feat, i) => {
-              const label = formatPhotonFeature(feat);
-              const key = `${feat.properties?.osm_id ?? ""}-${feat.geometry?.coordinates?.join(",") ?? i}-${i}`;
-              return (
-                <li
-                  key={key}
-                  role="option"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    handlePick(feat);
-                  }}
-                  style={{
-                    padding: "9px 12px",
-                    fontSize: 13,
-                    color: rowText,
-                    cursor: "pointer",
-                    lineHeight: 1.35,
-                    fontWeight: 500,
-                    borderBottom: i < items.length - 1 ? (dark ? "1px solid rgba(255,255,255,0.08)" : "1px solid #f1f5f9") : "none",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = `rgba(${hoverRgb}, ${dark ? 0.18 : 0.08})`;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "transparent";
-                  }}
-                >
-                  {label}
-                </li>
-              );
-            })}
-          {!loading && items.length === 0 && (
-            <li style={{ padding: "10px 12px", fontSize: 12, color: mutedText, lineHeight: 1.45 }}>
-              未找到匹配地点，可继续手动输入
-            </li>
-          )}
+          {suggestionList}
         </ul>
       )}
+      {showDropdown &&
+        dark &&
+        fixedListPos &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <ul
+            ref={listRef}
+            role="listbox"
+            style={{
+              position: "fixed",
+              left: fixedListPos.left,
+              top: fixedListPos.top,
+              width: fixedListPos.width,
+              maxHeight: fixedListPos.maxH,
+              margin: 0,
+              padding: "4px 0",
+              overflowY: "auto",
+              borderRadius: 10,
+              border: `1px solid ${listBorder}`,
+              background: listBg,
+              boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+              zIndex: 200000,
+              listStyle: "none",
+            }}
+          >
+            {suggestionList}
+          </ul>,
+          document.body
+        )}
     </div>
   );
 }
@@ -837,14 +1065,12 @@ function WheelScrollColumn({
   embedded,
   variant = "dark",
   rebound,
-  itemHeight = 40,
-  viewportHeight = 216,
 }) {
   const scrollRef = useRef(null);
   /** 与视口滚动同步，用于按「中间框」位置计算各行与中心线的距离（非系统时间） */
   const [scrollTop, setScrollTop] = useState(0);
-  const ITEM_H = itemHeight;
-  const VISIBLE = viewportHeight;
+  const ITEM_H = 40;
+  const VISIBLE = 216;
   const PAD = (VISIBLE - ITEM_H) / 2;
   const isEqual = equals ?? defaultWheelEquals;
   const isLight = variant === "light";
@@ -860,7 +1086,7 @@ function WheelScrollColumn({
       el.scrollTop = st;
       setScrollTop(st);
     }
-  }, [indexOfValue, PAD, ITEM_H]);
+  }, [indexOfValue, PAD]);
 
   useEffect(() => {
     syncScroll();
@@ -1017,19 +1243,13 @@ function WheelScrollColumn({
 }
 
 /** 时间：24 小时 + : + 分钟；与日期列同高、选中框对齐 */
-function TimeHourMinuteBlock({
-  hour24,
-  minute,
-  onHour24Change,
-  onMinuteChange,
-  variant = "dark",
-  heading = "时间",
-  compact = false,
-}) {
+function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, variant = "dark", hideLabel = false }) {
   const isLight = variant === "light";
   const [hourGi, setHourGi] = useState(() => hour24ToGlobalHourIndex(hour24));
-  const itemH = compact ? 32 : 40;
-  const viewH = compact ? 144 : 216;
+
+  useEffect(() => {
+    setHourGi(hour24ToGlobalHourIndex(hour24));
+  }, [hour24]);
 
   const hourRebound = useMemo(
     () => ({
@@ -1045,7 +1265,7 @@ function TimeHourMinuteBlock({
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-      {heading ? (
+      {!hideLabel && (
         <div
           style={{
             fontSize: 11,
@@ -1054,19 +1274,19 @@ function TimeHourMinuteBlock({
             minHeight: WHEEL_LABEL_ROW_MIN_H,
             display: "flex",
             alignItems: "center",
-            color: isLight ? "rgba(0,51,153,0.75)" : "rgba(255,255,255,0.78)",
-            opacity: isLight ? 1 : 1,
+            color: isLight ? "rgba(0,51,153,0.75)" : undefined,
+            opacity: isLight ? 1 : 0.75,
           }}
         >
-          {heading}
+          时间
         </div>
-      ) : null}
+      )}
       <div
         style={{
           display: "flex",
           alignItems: "stretch",
           gap: 0,
-          height: viewH,
+          height: 220,
           border: borderStyle,
           borderRadius: 12,
           padding: "0 8px",
@@ -1078,8 +1298,6 @@ function TimeHourMinuteBlock({
           embedded
           variant={variant}
           rebound={hourRebound}
-          itemHeight={itemH}
-          viewportHeight={viewH}
           options={HOUR_GLOBAL_OPTIONS}
           value={hourGi}
           onChange={(gi) => {
@@ -1091,7 +1309,7 @@ function TimeHourMinuteBlock({
         />
         <span
           style={{
-            fontSize: compact ? 18 : 22,
+            fontSize: 22,
             fontWeight: 700,
             color: isLight ? "rgba(0,51,153,0.9)" : "rgba(255,255,255,0.92)",
             paddingBottom: 2,
@@ -1105,8 +1323,6 @@ function TimeHourMinuteBlock({
         <WheelScrollColumn
           embedded
           variant={variant}
-          itemHeight={itemH}
-          viewportHeight={viewH}
           options={MINUTE_OPTIONS}
           value={minute}
           onChange={onMinuteChange}
@@ -1306,22 +1522,39 @@ export default function CollegeRide() {
   const [returnMinute, setReturnMinute] = useState(0);
   const [returnWheelKey, setReturnWheelKey] = useState(0);
   const planPickupTimeBtnRef = useRef(null);
-  const [pickupPopoverPos, setPickupPopoverPos] = useState({ x: 0, y: 0 });
+  /** 接载菜单：测量完成后再渲染 portal，避免 (0,0) 或 translate 导致的错位；null 表示未就绪或已关闭 */
+  const [pickupPopoverLayout, setPickupPopoverLayout] = useState(null);
+  /** 关闭中：播放收合动画后再卸载 portal */
+  const [pickupPopoverClosing, setPickupPopoverClosing] = useState(false);
   /** 乘客常用路线：本地持久化 */
   const [commonRoutes, setCommonRoutes] = useState(() => loadCommonRoutesFromStorage());
   const [commonRouteSaveName, setCommonRouteSaveName] = useState("");
-  const [showCommonRouteSaveForm, setShowCommonRouteSaveForm] = useState(false);
+  const [showCommonRouteCreateForm, setShowCommonRouteCreateForm] = useState(false);
+  const [commonRouteSaving, setCommonRouteSaving] = useState(false);
+  const [crFromUseCL, setCrFromUseCL] = useState(true);
+  const [crFrom, setCrFrom] = useState("");
+  const [crFromCoords, setCrFromCoords] = useState(null);
+  const [crTo, setCrTo] = useState("");
+  const [crToCoords, setCrToCoords] = useState(null);
+  const [crTimeEnabled, setCrTimeEnabled] = useState(false);
+  const [crHour, setCrHour] = useState(8);
+  const [crMinute, setCrMinute] = useState(0);
   const [scheduleEntries, setScheduleEntries] = useState(() => loadScheduleEntriesFromStorage());
+  const scheduleWeekGridBounds = useMemo(() => getScheduleWeekGridBounds(scheduleEntries), [scheduleEntries]);
+  const scheduleHourSlots = useMemo(
+    () => buildHourSlotStarts(scheduleWeekGridBounds.rowStartMin, scheduleWeekGridBounds.rowEndMin),
+    [scheduleWeekGridBounds.rowStartMin, scheduleWeekGridBounds.rowEndMin]
+  );
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [scheduleModalWeekday, setScheduleModalWeekday] = useState(0);
   const [scheduleModalHour, setScheduleModalHour] = useState(8);
   const [scheduleModalMinute, setScheduleModalMinute] = useState(0);
-  const [scheduleModalWheelKey, setScheduleModalWheelKey] = useState(0);
+  /** 返程：与「出发地使用当前位置」同类的勾选，默认不选；选中后显示返程时间轮盘 */
   const [scheduleModalReturnEnabled, setScheduleModalReturnEnabled] = useState(false);
+  const [scheduleModalCommitting, setScheduleModalCommitting] = useState(false);
   const [scheduleModalReturnHour, setScheduleModalReturnHour] = useState(18);
   const [scheduleModalReturnMinute, setScheduleModalReturnMinute] = useState(0);
-  const [scheduleModalReturnWheelKey, setScheduleModalReturnWheelKey] = useState(0);
-  const [scheduleModalFromUseCL, setScheduleModalFromUseCL] = useState(true);
+  const [scheduleModalFromUseCL, setScheduleModalFromUseCL] = useState(false);
   const [scheduleModalFrom, setScheduleModalFrom] = useState("");
   const [scheduleModalTo, setScheduleModalTo] = useState("");
   const [scheduleModalFromCoords, setScheduleModalFromCoords] = useState(null);
@@ -1363,7 +1596,12 @@ export default function CollegeRide() {
 
   useEffect(() => {
     if (!planTripOpen) {
+      if (pickupMenuCloseTimerRef.current) {
+        clearTimeout(pickupMenuCloseTimerRef.current);
+        pickupMenuCloseTimerRef.current = null;
+      }
       setPickupTimeMenuOpen(false);
+      setPickupPopoverClosing(false);
       setPickupTimeMenuExpanded(false);
       setPickupTimeMode("immediate");
       setPlanTripCampusOpen(false);
@@ -1379,31 +1617,65 @@ export default function CollegeRide() {
   }, [pickupTimeMenuOpen, pickupTimeMode]);
 
   useLayoutEffect(() => {
-    if (!pickupTimeMenuOpen) return;
-    const update = () => {
+    if (!pickupTimeMenuOpen) {
+      setPickupPopoverLayout(null);
+      return;
+    }
+    const measure = () => {
       const el = planPickupTimeBtnRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPickupPopoverPos({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      if (r.width <= 0 && r.height <= 0) return;
+      const margin = 12;
+      const vw = document.documentElement?.clientWidth || window.innerWidth;
+      const vv = window.visualViewport;
+      const vh = vv?.height ?? window.innerHeight;
+      const upperHalfBottom = vh * 0.5 - margin;
+      const top = margin + (vv?.offsetTop ?? 0);
+      const panelW = Math.min(380, vw - margin * 2);
+      const left = (vw - panelW) / 2;
+      const spaceBelow = vh - top - margin;
+      const maxH = pickupTimeMenuExpanded
+        ? Math.min(Math.max(spaceBelow, 0), 900)
+        : Math.max(120, Math.min(540, Math.max(0, upperHalfBottom - top)));
+      setPickupPopoverLayout({ left, top, width: panelW, maxH });
     };
-    update();
-    const t = window.setTimeout(update, 0);
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
+    measure();
+    const rafOuter = requestAnimationFrame(() => {
+      requestAnimationFrame(measure);
+    });
+    const t = window.setTimeout(measure, 0);
+    const el = planPickupTimeBtnRef.current;
+    let ro;
+    if (el && typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => measure());
+      ro.observe(el);
+    }
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("scroll", measure);
+    window.addEventListener("scroll", measure, true);
     return () => {
+      cancelAnimationFrame(rafOuter);
       window.clearTimeout(t);
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("scroll", measure);
+      window.removeEventListener("scroll", measure, true);
     };
-  }, [pickupTimeMenuOpen]);
+  }, [pickupTimeMenuOpen, pickupTimeMenuExpanded]);
 
   const closePickupMenuAnimated = useCallback(() => {
-    if (pickupMenuCloseTimerRef.current) clearTimeout(pickupMenuCloseTimerRef.current);
+    if (!pickupTimeMenuOpen) return;
+    if (pickupMenuCloseTimerRef.current) return;
+    setPickupPopoverClosing(true);
     pickupMenuCloseTimerRef.current = setTimeout(() => {
       setPickupTimeMenuOpen(false);
+      setPickupPopoverClosing(false);
       pickupMenuCloseTimerRef.current = null;
     }, PICKUP_MENU_ANIM_MS);
-  }, []);
+  }, [pickupTimeMenuOpen]);
 
   useEffect(() => {
     return () => {
@@ -1528,7 +1800,7 @@ export default function CollegeRide() {
     [riderToCoords, effectiveFromLatLng, fromUseCurrentLocation, riderFromCoords]
   );
 
-  /** 出发时间按钮展示；含可选返程 */
+  /** 出发时间按钮展示（24 小时制）；含可选返程 */
   const planTripTimeChipLabel = useMemo(() => {
     if (pickupTimeMode === "immediate") return "立即接载";
     let s = formatScheduleChipLabel(scheduledPickupDate, scheduledHour, scheduledMinute);
@@ -1656,6 +1928,43 @@ export default function CollegeRide() {
       }
       setRiderTo(trip.toLabel);
       setRiderToCoords({ lat: trip.toLat, lng: trip.toLng });
+      let tf;
+      if (typeof trip.minutes === "number" && !Number.isNaN(trip.minutes)) {
+        const m = Math.max(0, Math.min(24 * 60 - 1, trip.minutes));
+        const retOn = trip.returnEnabled === true && typeof trip.returnMinutes === "number" && !Number.isNaN(trip.returnMinutes);
+        const rm = retOn ? Math.max(0, Math.min(24 * 60 - 1, trip.returnMinutes)) : 0;
+        tf = {
+          timeEnabled: true,
+          outHour: Math.floor(m / 60) % 24,
+          outMinute: m % 60,
+          returnEnabled: retOn,
+          returnHour: retOn ? Math.floor(rm / 60) % 24 : 18,
+          returnMinute: retOn ? rm % 60 : 0,
+        };
+      } else {
+        tf = getCommonRouteTimeFields(trip);
+      }
+      const n = new Date();
+      const useScheduledTime = tf.timeEnabled !== false;
+      if (useScheduledTime) {
+        setPickupTimeMode("scheduled");
+        setScheduledPickupDate(new Date(n.getFullYear(), n.getMonth(), n.getDate()));
+        setScheduledHour(tf.outHour);
+        setScheduledMinute(tf.outMinute);
+        setPickupWheelResetKey((k) => k + 1);
+      } else {
+        setPickupTimeMode("immediate");
+      }
+      setPlanTripReturnEnabled(!!tf.returnEnabled && useScheduledTime);
+      if (tf.returnEnabled && useScheduledTime) {
+        setReturnHour(tf.returnHour);
+        setReturnMinute(tf.returnMinute);
+        setReturnScheduledDate(new Date(n.getFullYear(), n.getMonth(), n.getDate()));
+        setReturnWheelKey((k) => k + 1);
+      } else {
+        setReturnHour(18);
+        setReturnMinute(0);
+      }
       setRoutePreviewReady(false);
       setPlanTripFocus("to");
       setTab("find");
@@ -1664,36 +1973,99 @@ export default function CollegeRide() {
     [setTab]
   );
 
-  const commitSaveCurrentAsCommonRoute = useCallback(() => {
-    if (!canConfirmPlanRoute || !effectiveFromLatLng || !riderToCoords) return;
+  const resetCommonRouteCreateForm = useCallback(() => {
+    setCommonRouteSaveName("通勤");
+    setCrFromUseCL(true);
+    setCrFrom("");
+    setCrFromCoords(null);
+    setCrTo("");
+    setCrToCoords(null);
+    setCrTimeEnabled(false);
+    setCrHour(8);
+    setCrMinute(0);
+  }, []);
+
+  const commitCreateCommonRoute = useCallback(async () => {
     const name = commonRouteSaveName.trim() || "常用路线";
-    const entry = {
-      id: `route-${Date.now()}`,
-      name,
-      fromLabel: fromUseCurrentLocation ? "" : riderFrom,
-      toLabel: riderTo,
-      fromUseCurrentLocation: !!fromUseCurrentLocation,
-      fromLat: fromUseCurrentLocation ? null : riderFromCoords?.lat ?? null,
-      fromLng: fromUseCurrentLocation ? null : riderFromCoords?.lng ?? null,
-      toLat: riderToCoords.lat,
-      toLng: riderToCoords.lng,
-      originJhuId: jhuLocationId,
-      originPickedFromBuilding: !!originPickedFromBuilding,
-    };
-    setCommonRoutes((prev) => [entry, ...prev]);
-    setShowCommonRouteSaveForm(false);
-    setCommonRouteSaveName("");
+    if (!crTo.trim()) return;
+    if (!crFromUseCL && !crFrom.trim()) return;
+    setCommonRouteSaving(true);
+    try {
+      const photonBias = {
+        lat: currentLocationCoords?.lat ?? activeCampus.lat,
+        lon: currentLocationCoords?.lng ?? activeCampus.lng,
+      };
+      let toCoords = crToCoords;
+      if (!toCoords) {
+        toCoords = await geocodePhotonFirst(crTo.trim(), photonBias);
+      }
+      if (!toCoords) {
+        window.alert("无法解析返回点，请从搜索列表中选择或输入更具体名称。");
+        return;
+      }
+      const toLat = Number(toCoords.lat);
+      const toLng = Number(toCoords.lng);
+      if (!Number.isFinite(toLat) || !Number.isFinite(toLng)) {
+        window.alert("返回点坐标无效。");
+        return;
+      }
+      let fromLat = null;
+      let fromLng = null;
+      if (!crFromUseCL) {
+        let fc = crFromCoords;
+        if (!fc) {
+          fc = await geocodePhotonFirst(crFrom.trim(), photonBias);
+        }
+        if (!fc) {
+          window.alert("无法解析出发点，请从搜索列表中选择或输入更具体名称。");
+          return;
+        }
+        fromLat = Number(fc.lat);
+        fromLng = Number(fc.lng);
+        if (!Number.isFinite(fromLat) || !Number.isFinite(fromLng)) {
+          window.alert("出发点坐标无效。");
+          return;
+        }
+      }
+      const entry = {
+        id: `route-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        name,
+        fromLabel: crFromUseCL ? "" : crFrom,
+        toLabel: crTo.trim(),
+        fromUseCurrentLocation: !!crFromUseCL,
+        fromLat: crFromUseCL ? null : fromLat,
+        fromLng: crFromUseCL ? null : fromLng,
+        toLat,
+        toLng,
+        originJhuId: null,
+        originPickedFromBuilding: false,
+        timeEnabled: !!crTimeEnabled,
+        ...(crTimeEnabled ? { outHour: crHour, outMinute: crMinute } : {}),
+        returnEnabled: false,
+      };
+      setCommonRoutes((prev) => [entry, ...prev]);
+      setShowCommonRouteCreateForm(false);
+      resetCommonRouteCreateForm();
+    } catch (err) {
+      console.error(err);
+      window.alert("保存失败，请检查网络后重试。");
+    } finally {
+      setCommonRouteSaving(false);
+    }
   }, [
-    canConfirmPlanRoute,
-    effectiveFromLatLng,
-    riderToCoords,
     commonRouteSaveName,
-    fromUseCurrentLocation,
-    riderFrom,
-    riderTo,
-    riderFromCoords,
-    jhuLocationId,
-    originPickedFromBuilding,
+    crFromUseCL,
+    crFrom,
+    crTo,
+    crFromCoords,
+    crToCoords,
+    crTimeEnabled,
+    crHour,
+    crMinute,
+    currentLocationCoords,
+    activeCampus.lat,
+    activeCampus.lng,
+    resetCommonRouteCreateForm,
   ]);
 
   const deleteCommonRoute = useCallback((id) => {
@@ -1704,12 +2076,11 @@ export default function CollegeRide() {
     setScheduleModalWeekday(0);
     setScheduleModalHour(8);
     setScheduleModalMinute(0);
-    setScheduleModalWheelKey((k) => k + 1);
     setScheduleModalReturnEnabled(false);
+    setScheduleModalCommitting(false);
     setScheduleModalReturnHour(18);
     setScheduleModalReturnMinute(0);
-    setScheduleModalReturnWheelKey((k) => k + 1);
-    setScheduleModalFromUseCL(true);
+    setScheduleModalFromUseCL(false);
     setScheduleModalFrom("");
     setScheduleModalTo("");
     setScheduleModalFromCoords(null);
@@ -1717,48 +2088,105 @@ export default function CollegeRide() {
     setScheduleModalOpen(true);
   }, []);
 
-  const commitScheduleEntry = useCallback(() => {
-    if (!scheduleModalToCoords) return;
-    if (!scheduleModalFromUseCL) {
-      if (!scheduleModalFrom.trim() || !scheduleModalFromCoords) return;
+  const commitScheduleEntry = useCallback(async () => {
+    if (!scheduleModalTo.trim()) return;
+    if (!scheduleModalFromUseCL && !scheduleModalFrom.trim()) return;
+    setScheduleModalCommitting(true);
+    try {
+      const photonBias = {
+        lat: currentLocationCoords?.lat ?? activeCampus.lat,
+        lon: currentLocationCoords?.lng ?? activeCampus.lng,
+      };
+      let toCoords = scheduleModalToCoords;
+      if (!toCoords) {
+        toCoords = await geocodePhotonFirst(scheduleModalTo.trim(), photonBias);
+      }
+      if (!toCoords) {
+        window.alert("无法解析目的地，请从搜索列表中选择地点，或输入更具体的名称。");
+        return;
+      }
+      const toLat = Number(toCoords.lat);
+      const toLng = Number(toCoords.lng);
+      if (!Number.isFinite(toLat) || !Number.isFinite(toLng)) {
+        window.alert("目的地坐标无效，请从搜索列表中重新选择。");
+        return;
+      }
+      let fromLat = null;
+      let fromLng = null;
+      if (!scheduleModalFromUseCL) {
+        let fc = scheduleModalFromCoords;
+        if (!fc) {
+          fc = await geocodePhotonFirst(scheduleModalFrom.trim(), photonBias);
+        }
+        if (!fc) {
+          window.alert("无法解析出发地，请从搜索列表中选择地点，或输入更具体的名称。");
+          return;
+        }
+        fromLat = Number(fc.lat);
+        fromLng = Number(fc.lng);
+        if (!Number.isFinite(fromLat) || !Number.isFinite(fromLng)) {
+          window.alert("出发地坐标无效，请从搜索列表中重新选择。");
+          return;
+        }
+      }
+      const minutes = Math.min(24 * 60 - 1, Math.max(0, scheduleModalHour * 60 + scheduleModalMinute));
+      const returnMinutes = scheduleModalReturnEnabled
+        ? Math.min(24 * 60 - 1, Math.max(0, scheduleModalReturnHour * 60 + scheduleModalReturnMinute))
+        : null;
+      const entry = {
+        id: `sch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        weekday: scheduleModalWeekday,
+        minutes,
+        fromLabel: scheduleModalFromUseCL ? "" : scheduleModalFrom,
+        toLabel: scheduleModalTo.trim() || "目的地",
+        fromUseCurrentLocation: !!scheduleModalFromUseCL,
+        fromLat: scheduleModalFromUseCL ? null : fromLat,
+        fromLng: scheduleModalFromUseCL ? null : fromLng,
+        toLat,
+        toLng,
+        originJhuId: null,
+        originPickedFromBuilding: false,
+        returnEnabled: !!scheduleModalReturnEnabled,
+        ...(scheduleModalReturnEnabled && returnMinutes != null ? { returnMinutes } : {}),
+      };
+      setScheduleEntries((prev) => [entry, ...prev]);
+      setScheduleModalOpen(false);
+    } catch (err) {
+      console.error(err);
+      window.alert("保存失败，请检查网络后重试。");
+    } finally {
+      setScheduleModalCommitting(false);
     }
-    const minutes = Math.min(24 * 60 - 1, Math.max(0, scheduleModalHour * 60 + scheduleModalMinute));
-    const returnMinutes = scheduleModalReturnEnabled
-      ? Math.min(24 * 60 - 1, Math.max(0, scheduleModalReturnHour * 60 + scheduleModalReturnMinute))
-      : null;
-    const entry = {
-      id: `sch-${Date.now()}`,
-      weekday: scheduleModalWeekday,
-      minutes,
-      returnMinutes,
-      fromLabel: scheduleModalFromUseCL ? "" : scheduleModalFrom,
-      toLabel: scheduleModalTo.trim() || "目的地",
-      fromUseCurrentLocation: !!scheduleModalFromUseCL,
-      fromLat: scheduleModalFromUseCL ? null : scheduleModalFromCoords?.lat ?? null,
-      fromLng: scheduleModalFromUseCL ? null : scheduleModalFromCoords?.lng ?? null,
-      toLat: scheduleModalToCoords.lat,
-      toLng: scheduleModalToCoords.lng,
-      originJhuId: null,
-      originPickedFromBuilding: false,
-    };
-    setScheduleEntries((prev) => [entry, ...prev]);
-    setScheduleModalOpen(false);
   }, [
     scheduleModalHour,
     scheduleModalMinute,
-    scheduleModalWeekday,
     scheduleModalReturnEnabled,
     scheduleModalReturnHour,
     scheduleModalReturnMinute,
+    scheduleModalWeekday,
     scheduleModalFromUseCL,
     scheduleModalFrom,
     scheduleModalTo,
     scheduleModalFromCoords,
     scheduleModalToCoords,
+    currentLocationCoords,
+    activeCampus.lat,
+    activeCampus.lng,
   ]);
 
   const deleteScheduleEntry = useCallback((id) => {
     setScheduleEntries((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  /** 从「找拼车」进入规划层：默认出发点为当前位置（与「使用此路线」注入的出发地无关） */
+  const openPlanTripFromFind = useCallback((focus) => {
+    userLockedCampus.current = false;
+    setFromUseCurrentLocation(true);
+    setRiderFrom("");
+    setRiderFromCoords(null);
+    setOriginPickedFromBuilding(false);
+    setPlanTripFocus(focus);
+    setPlanTripOpen(true);
   }, []);
 
   const onOriginInputFocus = () => {
@@ -2300,7 +2728,39 @@ export default function CollegeRide() {
         .cr-ride-card { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
         .cr-ride-card:hover { box-shadow: 0 8px 24px rgba(${themePrimaryRgb}, 0.1); border-color: #c5d0e0; }
         .cr-input-wrap:focus-within { border-color: ${themePrimary}; box-shadow: 0 0 0 3px rgba(${themePrimaryRgb}, 0.15); }
-        .cr-plan-input-dark::placeholder { color: rgba(255,255,255,0.45); }
+        .cr-plan-input-dark::placeholder { color: #ffffff; }
+        @keyframes crPickupPopoverDrop {
+          from {
+            opacity: 0;
+            transform: translateY(-100vh);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .cr-pickup-popover-enter {
+          animation: crPickupPopoverDrop ${PICKUP_MENU_ANIM_MS}ms ease-out forwards;
+          transform-origin: top center;
+        }
+        @keyframes crPickupPopoverRetract {
+          from {
+            opacity: 1;
+            transform: translateY(0);
+          }
+          to {
+            opacity: 0;
+            transform: translateY(-100vh);
+          }
+        }
+        .cr-pickup-popover-exit {
+          animation: crPickupPopoverRetract ${PICKUP_MENU_ANIM_MS}ms ease-in forwards;
+          transform-origin: top center;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .cr-pickup-popover-enter { animation: none; opacity: 1; transform: none; }
+          .cr-pickup-popover-exit { animation: none; opacity: 0; transform: none; }
+        }
       `}</style>
 
       <div style={styles.header}>
@@ -2456,10 +2916,7 @@ export default function CollegeRide() {
                   <div style={{ display: "flex", alignItems: "center", minHeight: 48 }}>
                     <button
                       type="button"
-                      onClick={() => {
-                        setPlanTripFocus("from");
-                        setPlanTripOpen(true);
-                      }}
+                      onClick={() => openPlanTripFromFind("from")}
                       style={{
                         flex: 1,
                         textAlign: "left",
@@ -2503,10 +2960,7 @@ export default function CollegeRide() {
                   <div style={{ height: 1, background: colors.border }} />
                   <button
                     type="button"
-                    onClick={() => {
-                      setPlanTripFocus("to");
-                      setPlanTripOpen(true);
-                    }}
+                    onClick={() => openPlanTripFromFind("to")}
                     style={{
                       flex: 1,
                       textAlign: "left",
@@ -2778,83 +3232,275 @@ export default function CollegeRide() {
             <div style={styles.sectionTitle}>常用路线</div>
             <div style={styles.sectionHeadline}>已保存的路线</div>
             <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.55 }}>
-              保存后可在找拼车或下方时间表中一键使用；出发前在「规划行程」里确认即可。
+              点击下方创建：填写名称、出发点与返回点；出发时间可选。保存后可在「找拼车」一键使用。
             </p>
 
-            {canConfirmPlanRoute && (
-              <div style={{ ...styles.card, marginBottom: 14 }}>
-                {!showCommonRouteSaveForm ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCommonRouteSaveName("通勤");
-                      setShowCommonRouteSaveForm(true);
-                    }}
-                    style={{ ...styles.btnOutline, width: "100%", marginBottom: 0 }}
-                  >
-                    将当前路线存为常用路线
-                  </button>
-                ) : (
-                  <div>
-                    <div style={{ ...styles.label, marginBottom: 8 }}>路线名称</div>
+            <div style={{ ...styles.card, marginBottom: 14 }}>
+              {!showCommonRouteCreateForm ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetCommonRouteCreateForm();
+                    setShowCommonRouteCreateForm(true);
+                  }}
+                  style={{ ...styles.btnOutline, width: "100%", marginBottom: 0 }}
+                >
+                  创建常用路线
+                </button>
+              ) : (
+                <div>
+                  <div style={{ ...styles.label, marginBottom: 8 }}>路线名称</div>
+                  <input
+                    type="text"
+                    value={commonRouteSaveName}
+                    onChange={(e) => setCommonRouteSaveName(e.target.value)}
+                    placeholder="例如：平日上学、周末回家"
+                    style={{ ...styles.input, marginBottom: 12 }}
+                  />
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer", fontSize: 14, color: colors.text }}>
                     <input
-                      type="text"
-                      value={commonRouteSaveName}
-                      onChange={(e) => setCommonRouteSaveName(e.target.value)}
-                      placeholder="例如：平日上学、周末回家"
-                      style={{ ...styles.input, marginBottom: 12 }}
+                      type="checkbox"
+                      className="cr-checkbox"
+                      checked={crFromUseCL}
+                      onChange={(e) => {
+                        setCrFromUseCL(e.target.checked);
+                        if (e.target.checked) {
+                          setCrFrom("");
+                          setCrFromCoords(null);
+                        }
+                      }}
+                      style={{
+                        cursor: "pointer",
+                        ["--cr-checkbox-border"]: colors.navy,
+                        ["--cr-checkbox-fill"]: colors.navy,
+                        ["--cr-checkbox-dot"]: colors.white,
+                      }}
                     />
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button type="button" onClick={() => setShowCommonRouteSaveForm(false)} style={{ ...styles.btnOutline, flex: 1 }}>
-                        取消
-                      </button>
-                      <button type="button" onClick={commitSaveCurrentAsCommonRoute} style={{ ...styles.btn, flex: 1 }}>
-                        保存
-                      </button>
+                    出发地使用当前位置
+                  </label>
+                  {!crFromUseCL && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ ...styles.label, marginBottom: 6 }}>出发点</div>
+                      <PlaceSuggestField
+                        inputId="cr-create-from"
+                        value={crFrom}
+                        onChange={setCrFrom}
+                        onCoordsChange={setCrFromCoords}
+                        placeholder="英文/中文地址或地点名"
+                        variant="light"
+                        borderColor={colors.border}
+                        hoverRgb={themePrimaryRgb}
+                        biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                        biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
+                        icon={
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: 10,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              color: colors.navy,
+                              display: "flex",
+                              zIndex: 1,
+                              pointerEvents: "none",
+                            }}
+                          >
+                            {Icons.pin}
+                          </span>
+                        }
+                        inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36 }}
+                        wrapperStyle={{ borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.white }}
+                      />
                     </div>
+                  )}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ ...styles.label, marginBottom: 6 }}>返回点</div>
+                    <PlaceSuggestField
+                      inputId="cr-create-to"
+                      value={crTo}
+                      onChange={setCrTo}
+                      onCoordsChange={setCrToCoords}
+                      placeholder="楼、店铺、公寓或地址"
+                      variant="light"
+                      borderColor={colors.border}
+                      hoverRgb={themePrimaryRgb}
+                      biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                      biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
+                      icon={
+                        <span
+                          style={{
+                            position: "absolute",
+                            left: 10,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            color: colors.navy,
+                            display: "flex",
+                            zIndex: 1,
+                            pointerEvents: "none",
+                          }}
+                        >
+                          {Icons.flag}
+                        </span>
+                      }
+                      inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36 }}
+                      wrapperStyle={{ borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.white }}
+                    />
                   </div>
-                )}
-              </div>
-            )}
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: crTimeEnabled ? 10 : 12, cursor: "pointer", fontSize: 14, color: colors.text }}>
+                    <input
+                      type="checkbox"
+                      className="cr-checkbox"
+                      checked={crTimeEnabled}
+                      onChange={(e) => setCrTimeEnabled(e.target.checked)}
+                      style={{
+                        cursor: "pointer",
+                        ["--cr-checkbox-border"]: colors.navy,
+                        ["--cr-checkbox-fill"]: colors.navy,
+                        ["--cr-checkbox-dot"]: colors.white,
+                      }}
+                    />
+                    设置出发时间（可选）
+                  </label>
+                  {crTimeEnabled && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, marginBottom: 8 }}>出发时间 · 24 小时制</div>
+                      <TimeHourMinuteBlock
+                        hideLabel
+                        variant="light"
+                        hour24={crHour}
+                        minute={crMinute}
+                        onHour24Change={setCrHour}
+                        onMinuteChange={setCrMinute}
+                      />
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCommonRouteCreateForm(false);
+                        resetCommonRouteCreateForm();
+                      }}
+                      style={{ ...styles.btnOutline, flex: 1 }}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => commitCreateCommonRoute()}
+                      disabled={
+                        commonRouteSaving ||
+                        !crTo.trim() ||
+                        !(crFromUseCL || crFrom.trim())
+                      }
+                      style={{
+                        ...styles.btn,
+                        flex: 1,
+                        opacity:
+                          commonRouteSaving || !crTo.trim() || !(crFromUseCL || crFrom.trim()) ? 0.45 : 1,
+                      }}
+                    >
+                      {commonRouteSaving ? "保存中…" : "保存"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {commonRoutes.length === 0 ? (
               <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 20 }}>
                 <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>
-                  暂无常用路线。在「找拼车」里选好出发地与目的地后，回到本页即可保存。
+                  暂无常用路线。点击上方「创建常用路线」添加。
                 </div>
               </div>
             ) : (
               commonRoutes.map((trip) => {
-                const fromText = trip.fromUseCurrentLocation ? "当前位置" : trip.fromLabel || "出发地";
+                const shortFrom = trip.fromUseCurrentLocation
+                  ? "当前位置"
+                  : shortSchedulePlaceName(trip.fromLabel, { fallback: "出发地" });
+                const shortTo = shortSchedulePlaceName(trip.toLabel, { fallback: "返回点" });
+                const tf = getCommonRouteTimeFields(trip);
+                const summary =
+                  `${shortFrom} → ${shortTo}` +
+                  (tf.timeEnabled ? ` · 出发 ${formatScheduleMinutes(tf.outHour * 60 + tf.outMinute)}` : "");
                 return (
-                  <div key={trip.id} style={{ ...styles.card, padding: "16px 18px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8, letterSpacing: "-0.02em" }}>{trip.name}</div>
-                    <div style={{ fontSize: 14, color: colors.text, lineHeight: 1.5, marginBottom: 14 }}>
-                      <span style={{ color: colors.muted, fontSize: 12, fontWeight: 600 }}>从 </span>
-                      {fromText}
-                      <br />
-                      <span style={{ color: colors.muted, fontSize: 12, fontWeight: 600 }}>到 </span>
-                      {trip.toLabel}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button type="button" onClick={() => applyCommonRoute(trip)} style={{ ...styles.btn, flex: 1, marginBottom: 0 }}>
-                        使用此路线
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteCommonRoute(trip.id)}
+                  <div key={trip.id} style={{ ...styles.card, padding: "8px 12px", marginBottom: 8 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 10,
+                        marginBottom: 4,
+                        minHeight: 22,
+                      }}
+                    >
+                      <div
                         style={{
-                          ...styles.btnOutline,
-                          flex: "0 0 auto",
-                          width: "auto",
-                          padding: "12px 14px",
-                          marginBottom: 0,
-                          color: colors.muted,
-                          borderColor: colors.border,
+                          fontWeight: 700,
+                          fontSize: 15,
+                          color: colors.text,
+                          lineHeight: 1.25,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          minWidth: 0,
+                          flex: 1,
                         }}
                       >
-                        删除
-                      </button>
+                        {trip.name}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={() => applyCommonRoute(trip)}
+                          style={{
+                            border: "none",
+                            background: colors.navy,
+                            color: colors.white,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            padding: "5px 10px",
+                            borderRadius: 8,
+                            cursor: "pointer",
+                            fontFamily: "'Inter', system-ui, sans-serif",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          使用此路线
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteCommonRoute(trip.id)}
+                          style={{
+                            border: "none",
+                            background: "#dc2626",
+                            color: colors.white,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            padding: "5px 10px",
+                            borderRadius: 8,
+                            cursor: "pointer",
+                            fontFamily: "'Inter', system-ui, sans-serif",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: colors.muted,
+                        lineHeight: 1.35,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={summary}
+                    >
+                      {summary}
                     </div>
                   </div>
                 );
@@ -2864,15 +3510,15 @@ export default function CollegeRide() {
             <div style={{ ...styles.sectionTitle, marginTop: 8 }}>常用时间表</div>
             <div style={styles.sectionHeadline}>一周安排</div>
             <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 12, lineHeight: 1.55 }}>
-              左侧加号可向时间表添加常用路线：选择星期、时间与起终点，条目会出现在对应星期的格子里。
+              左侧加号添加常用行程。纵轴为时间（默认 6:00 起，若有更早行程会自动向上扩展）；横轴为周一到周日。
             </p>
 
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
-              <div style={{ width: 40, flexShrink: 0, paddingTop: 22 }}>
+              <div style={{ width: 40, flexShrink: 0, paddingTop: 4 }}>
                 <button
                   type="button"
                   onClick={openScheduleModal}
-                  aria-label="向时间表添加常用路线"
+                  aria-label="添加常用行程"
                   style={{
                     width: 36,
                     height: 36,
@@ -2891,111 +3537,162 @@ export default function CollegeRide() {
                 </button>
               </div>
               <div style={{ flex: 1, minWidth: 0, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(7, minmax(76px, 1fr))",
-                    gap: 6,
-                    minWidth: 560,
-                  }}
-                >
-                  {WEEKDAY_LABELS.map((label, wd) => (
-                    <div key={label}>
+                <div style={{ minWidth: 600, border: `1px solid ${colors.border}`, borderRadius: 10, overflow: "hidden", background: colors.page }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "44px repeat(7, minmax(72px, 1fr))",
+                      gap: 0,
+                      background: colors.card,
+                      borderBottom: `1px solid ${colors.border}`,
+                    }}
+                  >
+                    <div style={{ minHeight: 28 }} aria-hidden />
+                    {WEEKDAY_LABELS.map((label) => (
                       <div
+                        key={label}
                         style={{
                           textAlign: "center",
                           fontSize: 11,
                           fontWeight: 700,
                           color: colors.muted,
-                          marginBottom: 6,
+                          padding: "8px 4px",
                           letterSpacing: "0.02em",
+                          borderLeft: `1px solid ${colors.border}`,
                         }}
                       >
                         {label}
                       </div>
+                    ))}
+                  </div>
+                  {scheduleHourSlots.map((slotStart) => (
+                    <div
+                      key={slotStart}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "44px repeat(7, minmax(72px, 1fr))",
+                        gap: 0,
+                        borderTop: slotStart > scheduleWeekGridBounds.rowStartMin ? `1px solid ${colors.border}` : undefined,
+                        minHeight: 56,
+                      }}
+                    >
                       <div
                         style={{
-                          border: `1px solid ${colors.border}`,
-                          borderRadius: 10,
-                          minHeight: 260,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: colors.muted,
+                          padding: "8px 6px 0 0",
+                          textAlign: "right",
                           background: colors.page,
-                          padding: 6,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
+                          boxSizing: "border-box",
                         }}
                       >
-                        {scheduleEntries
-                          .filter((e) => e.weekday === wd)
-                          .sort((a, b) => a.minutes - b.minutes)
-                          .map((entry) => {
-                            const fromT = entry.fromUseCurrentLocation ? "当前位置" : entry.fromLabel || "出发地";
-                            return (
-                              <div
-                                key={entry.id}
-                                style={{
-                                  background: colors.card,
-                                  borderRadius: 8,
-                                  padding: "8px 8px 6px",
-                                  border: `1px solid ${colors.border}`,
-                                  fontSize: 11,
-                                  lineHeight: 1.35,
-                                }}
-                              >
-                                <div style={{ fontWeight: 700, color: colors.navy, marginBottom: 4, fontSize: 12, lineHeight: 1.35 }}>
-                                  {formatScheduleMinutes(entry.minutes)}
-                                  {entry.returnMinutes != null ? (
-                                    <span style={{ color: colors.muted, fontWeight: 600 }}>
-                                      {" "}
-                                      · 返程 {formatScheduleMinutes(entry.returnMinutes)}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <div style={{ color: colors.text, marginBottom: 6 }}>
-                                  {fromT} → {entry.toLabel}
-                                </div>
-                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    onClick={() => applyCommonRoute(entry)}
-                                    style={{
-                                      flex: 1,
-                                      minWidth: 0,
-                                      padding: "6px 6px",
-                                      borderRadius: 6,
-                                      border: "none",
-                                      background: colors.navy,
-                                      color: colors.white,
-                                      fontSize: 10,
-                                      fontWeight: 600,
-                                      cursor: "pointer",
-                                      fontFamily: "'Inter', system-ui, sans-serif",
-                                    }}
-                                  >
-                                    使用
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => deleteScheduleEntry(entry.id)}
-                                    style={{
-                                      padding: "6px 8px",
-                                      borderRadius: 6,
-                                      border: `1px solid ${colors.border}`,
-                                      background: colors.white,
-                                      color: colors.muted,
-                                      fontSize: 10,
-                                      fontWeight: 600,
-                                      cursor: "pointer",
-                                      fontFamily: "'Inter', system-ui, sans-serif",
-                                    }}
-                                  >
-                                    删
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
+                        {formatScheduleMinutes(slotStart)}
                       </div>
+                      {WEEKDAY_LABELS.map((_, wd) => {
+                        const cellItems = scheduleEntries.filter(
+                          (e) =>
+                            e.weekday === wd &&
+                            (scheduleEntryInHourSlot(e, slotStart) || scheduleReturnInHourSlot(e, slotStart))
+                        );
+                        return (
+                          <div
+                            key={`${slotStart}-${wd}`}
+                            style={{
+                              borderLeft: `1px solid ${colors.border}`,
+                              padding: 4,
+                              background: colors.white,
+                              minHeight: 52,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 4,
+                              alignItems: "stretch",
+                              boxSizing: "border-box",
+                            }}
+                          >
+                            {cellItems.map((entry) => {
+                              const shortFrom = entry.fromUseCurrentLocation
+                                ? "当前位置"
+                                : shortSchedulePlaceName(entry.fromLabel, { fallback: "出发地" });
+                              const shortTo = shortSchedulePlaceName(entry.toLabel, { fallback: "目的地" });
+                              const routeShort = `${shortFrom} → ${shortTo}`;
+                              const showDep = scheduleEntryInHourSlot(entry, slotStart);
+                              const showRet = scheduleReturnInHourSlot(entry, slotStart);
+                              return (
+                                <div
+                                  key={`${entry.id}-${slotStart}`}
+                                  style={{
+                                    background: colors.card,
+                                    borderRadius: 6,
+                                    padding: "6px 6px 4px",
+                                    border: `1px solid ${colors.border}`,
+                                    fontSize: 10,
+                                    lineHeight: 1.3,
+                                  }}
+                                >
+                                  {showDep && (
+                                    <>
+                                      <div style={{ fontWeight: 700, color: colors.navy, fontSize: 10, marginBottom: 2 }}>
+                                        {formatScheduleMinutes(entry.minutes)}
+                                      </div>
+                                      <div style={{ color: colors.text, marginBottom: showRet ? 4 : 4 }}>{routeShort}</div>
+                                    </>
+                                  )}
+                                  {showRet && !showDep && (
+                                    <div style={{ color: colors.text, marginBottom: 4, fontSize: 10 }}>{routeShort}</div>
+                                  )}
+                                  {showRet && (
+                                    <div style={{ fontSize: 9, fontWeight: 600, color: colors.muted, marginBottom: 4 }}>
+                                      返程 {formatScheduleMinutes(entry.returnMinutes)}
+                                    </div>
+                                  )}
+                                  <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => applyCommonRoute(entry)}
+                                      style={{
+                                        flex: 1,
+                                        minWidth: 0,
+                                        padding: "5px 4px",
+                                        borderRadius: 5,
+                                        border: "none",
+                                        background: colors.navy,
+                                        color: colors.white,
+                                        fontSize: 9,
+                                        fontWeight: 600,
+                                        cursor: "pointer",
+                                        fontFamily: "'Inter', system-ui, sans-serif",
+                                      }}
+                                    >
+                                      使用
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label="删除"
+                                      onClick={() => deleteScheduleEntry(entry.id)}
+                                      style={{
+                                        padding: "4px 5px",
+                                        borderRadius: 5,
+                                        border: `1px solid ${colors.border}`,
+                                        background: colors.white,
+                                        color: "#dc2626",
+                                        cursor: "pointer",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        lineHeight: 0,
+                                        flexShrink: 0,
+                                      }}
+                                    >
+                                      <span style={{ display: "flex" }}>{Icons.trash}</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
                     </div>
                   ))}
                 </div>
@@ -3025,7 +3722,7 @@ export default function CollegeRide() {
                 position: "absolute",
                 inset: 0,
                 border: "none",
-                background: "rgba(0,0,0,0.45)",
+                background: "rgba(0,0,0,0.5)",
                 cursor: "pointer",
               }}
             />
@@ -3038,35 +3735,25 @@ export default function CollegeRide() {
                 position: "relative",
                 width: "100%",
                 maxWidth: 400,
-                maxHeight: "min(92vh, 900px)",
+                maxHeight: "min(92vh, 880px)",
                 overflowY: "auto",
-                background: colors.navy,
+                background: RIDER_PRIMARY,
+                color: "#ffffff",
                 borderRadius: 16,
                 padding: "20px 18px 18px",
-                boxShadow: "0 20px 50px rgba(0,0,0,0.35)",
+                boxShadow: "0 24px 56px rgba(0,0,0,0.35)",
                 zIndex: 1,
-                color: colors.white,
+                border: "1px solid rgba(255,255,255,0.2)",
               }}
             >
-              <div id="cr-schedule-modal-title" style={{ fontWeight: 700, fontSize: 18, marginBottom: 6, color: colors.white }}>
-                添加常用路线
+              <div id="cr-schedule-modal-title" style={{ fontWeight: 800, fontSize: 18, marginBottom: 6, color: "#ffffff" }}>
+                添加常用行程
               </div>
-              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginBottom: 16, lineHeight: 1.5 }}>
-                选择星期、出发时间与起终点，保存后会出现在对应星期的格子里。
+              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.82)", marginBottom: 16, lineHeight: 1.5 }}>
+                选择星期、<strong style={{ fontWeight: 700 }}>24 小时制</strong>出发时间与起终点；可勾选返程并选择返程时间。保存后会出现在一周安排表对应时间与星期格子中。
               </p>
 
-              <div
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: "rgba(255,255,255,0.55)",
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  marginBottom: 8,
-                }}
-              >
-                星期
-              </div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>星期</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
                 {WEEKDAY_LABELS.map((label, i) => (
                   <button
@@ -3076,9 +3763,9 @@ export default function CollegeRide() {
                     style={{
                       padding: "8px 10px",
                       borderRadius: 8,
-                      border: `1px solid ${scheduleModalWeekday === i ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.35)"}`,
-                      background: scheduleModalWeekday === i ? "rgba(255,255,255,0.95)" : "transparent",
-                      color: scheduleModalWeekday === i ? colors.navy : "rgba(255,255,255,0.92)",
+                      border: `1px solid ${scheduleModalWeekday === i ? "#ffffff" : "rgba(255,255,255,0.45)"}`,
+                      background: scheduleModalWeekday === i ? "#ffffff" : "transparent",
+                      color: scheduleModalWeekday === i ? RIDER_PRIMARY : "rgba(255,255,255,0.95)",
                       fontWeight: scheduleModalWeekday === i ? 700 : 500,
                       fontSize: 12,
                       cursor: "pointer",
@@ -3090,12 +3777,11 @@ export default function CollegeRide() {
                 ))}
               </div>
 
+              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>出发时间 · 24 小时制</div>
               <div style={{ marginBottom: 14 }}>
                 <TimeHourMinuteBlock
-                  key={scheduleModalWheelKey}
+                  hideLabel
                   variant="dark"
-                  compact
-                  heading="出发时间"
                   hour24={scheduleModalHour}
                   minute={scheduleModalMinute}
                   onHour24Change={setScheduleModalHour}
@@ -3112,10 +3798,12 @@ export default function CollegeRide() {
                   cursor: "pointer",
                   fontSize: 14,
                   color: "rgba(255,255,255,0.95)",
+                  userSelect: "none",
                 }}
               >
                 <input
                   type="checkbox"
+                  className="cr-checkbox"
                   checked={scheduleModalFromUseCL}
                   onChange={(e) => {
                     setScheduleModalFromUseCL(e.target.checked);
@@ -3124,32 +3812,30 @@ export default function CollegeRide() {
                       setScheduleModalFromCoords(null);
                     }
                   }}
-                  style={{ width: 18, height: 18, accentColor: "#fff", cursor: "pointer" }}
+                  style={{
+                    cursor: "pointer",
+                    ["--cr-checkbox-border"]: "#ffffff",
+                    ["--cr-checkbox-fill"]: "#ffffff",
+                    ["--cr-checkbox-dot"]: RIDER_PRIMARY,
+                  }}
                 />
                 出发地使用当前位置
               </label>
 
               {!scheduleModalFromUseCL && (
                 <div style={{ marginBottom: 12 }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: "rgba(255,255,255,0.55)",
-                      marginBottom: 6,
-                    }}
-                  >
-                    出发地
-                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>出发地</div>
                   <PlaceSuggestField
                     inputId="cr-schedule-modal-from"
                     value={scheduleModalFrom}
                     onChange={setScheduleModalFrom}
                     onCoordsChange={setScheduleModalFromCoords}
-                    placeholder="搜索出发地"
+                    placeholder="英文/中文地址或地点名（楼、餐厅等）"
                     variant="dark"
-                    borderColor="rgba(255,255,255,0.28)"
-                    hoverRgb={themePrimaryRgb}
+                    borderColor="rgba(255,255,255,0.25)"
+                    hoverRgb="255, 255, 255"
+                    biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                    biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
                     icon={
                       <span
                         style={{
@@ -3157,7 +3843,7 @@ export default function CollegeRide() {
                           left: 10,
                           top: "50%",
                           transform: "translateY(-50%)",
-                          color: "rgba(255,255,255,0.85)",
+                          color: "rgba(255,255,255,0.9)",
                           display: "flex",
                           zIndex: 1,
                           pointerEvents: "none",
@@ -3166,43 +3852,29 @@ export default function CollegeRide() {
                         {Icons.pin}
                       </span>
                     }
-                    inputStyle={{
-                      ...styles.input,
-                      marginBottom: 0,
-                      paddingLeft: 36,
-                      background: "rgba(0,0,0,0.2)",
-                      border: "1px solid rgba(255,255,255,0.2)",
-                      color: "#fff",
-                    }}
+                    inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36, paddingTop: 12, paddingBottom: 12, fontSize: 15 }}
                     wrapperStyle={{
                       borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.25)",
+                      border: "1px solid rgba(255,255,255,0.28)",
                       background: "rgba(0,0,0,0.15)",
                     }}
                   />
                 </div>
               )}
 
-              <div style={{ marginBottom: 16 }}>
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: "rgba(255,255,255,0.55)",
-                    marginBottom: 6,
-                  }}
-                >
-                  目的地
-                </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>目的地</div>
                 <PlaceSuggestField
                   inputId="cr-schedule-modal-to"
                   value={scheduleModalTo}
                   onChange={setScheduleModalTo}
                   onCoordsChange={setScheduleModalToCoords}
-                  placeholder="搜索目的地"
+                  placeholder="英文/中文地址或地点名（楼、餐厅等）"
                   variant="dark"
-                  borderColor="rgba(255,255,255,0.28)"
-                  hoverRgb={themePrimaryRgb}
+                  borderColor="rgba(255,255,255,0.25)"
+                  hoverRgb="255, 255, 255"
+                  biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                  biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
                   icon={
                     <span
                       style={{
@@ -3210,7 +3882,7 @@ export default function CollegeRide() {
                         left: 10,
                         top: "50%",
                         transform: "translateY(-50%)",
-                        color: "rgba(255,255,255,0.85)",
+                        color: "rgba(255,255,255,0.9)",
                         display: "flex",
                         zIndex: 1,
                         pointerEvents: "none",
@@ -3219,17 +3891,10 @@ export default function CollegeRide() {
                       {Icons.flag}
                     </span>
                   }
-                  inputStyle={{
-                    ...styles.input,
-                    marginBottom: 0,
-                    paddingLeft: 36,
-                    background: "rgba(0,0,0,0.2)",
-                    border: "1px solid rgba(255,255,255,0.2)",
-                    color: "#fff",
-                  }}
+                  inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36, paddingTop: 12, paddingBottom: 12, fontSize: 15 }}
                   wrapperStyle={{
                     borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.25)",
+                    border: "1px solid rgba(255,255,255,0.28)",
                     background: "rgba(0,0,0,0.15)",
                   }}
                 />
@@ -3240,51 +3905,65 @@ export default function CollegeRide() {
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  marginBottom: scheduleModalReturnEnabled ? 10 : 14,
+                  marginBottom: 12,
                   cursor: "pointer",
                   fontSize: 14,
                   color: "rgba(255,255,255,0.95)",
+                  userSelect: "none",
                 }}
               >
                 <input
                   type="checkbox"
+                  className="cr-checkbox"
                   checked={scheduleModalReturnEnabled}
-                  onChange={(e) => {
-                    setScheduleModalReturnEnabled(e.target.checked);
-                    if (e.target.checked) setScheduleModalReturnWheelKey((k) => k + 1);
+                  onChange={(e) => setScheduleModalReturnEnabled(e.target.checked)}
+                  style={{
+                    cursor: "pointer",
+                    ["--cr-checkbox-border"]: "#ffffff",
+                    ["--cr-checkbox-fill"]: "#ffffff",
+                    ["--cr-checkbox-dot"]: RIDER_PRIMARY,
                   }}
-                  style={{ width: 18, height: 18, accentColor: "#fff", cursor: "pointer" }}
                 />
-                添加返程
+                返程
               </label>
-              {scheduleModalReturnEnabled && (
-                <div style={{ marginBottom: 16 }}>
+
+              <div
+                style={{
+                  maxHeight: scheduleModalReturnEnabled ? 320 : 0,
+                  opacity: scheduleModalReturnEnabled ? 1 : 0,
+                  overflow: "hidden",
+                  transition: "max-height 0.2s ease, opacity 0.2s ease",
+                  marginBottom: scheduleModalReturnEnabled ? 14 : 0,
+                  pointerEvents: scheduleModalReturnEnabled ? "auto" : "none",
+                }}
+                aria-hidden={!scheduleModalReturnEnabled}
+              >
+                <div style={{ marginBottom: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>返程时间 · 24 小时制</div>
                   <TimeHourMinuteBlock
-                    key={scheduleModalReturnWheelKey}
+                    hideLabel
                     variant="dark"
-                    compact
-                    heading="返程时间"
                     hour24={scheduleModalReturnHour}
                     minute={scheduleModalReturnMinute}
                     onHour24Change={setScheduleModalReturnHour}
                     onMinuteChange={setScheduleModalReturnMinute}
                   />
                 </div>
-              )}
+              </div>
 
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <button
                   type="button"
                   onClick={() => setScheduleModalOpen(false)}
                   style={{
                     flex: 1,
-                    padding: "14px 16px",
-                    borderRadius: 12,
-                    border: "1px solid rgba(255,255,255,0.45)",
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.55)",
                     background: "transparent",
-                    color: "rgba(255,255,255,0.95)",
-                    fontSize: 15,
+                    color: "#ffffff",
                     fontWeight: 600,
+                    fontSize: 14,
                     cursor: "pointer",
                     fontFamily: "'Inter', system-ui, sans-serif",
                   }}
@@ -3293,53 +3972,37 @@ export default function CollegeRide() {
                 </button>
                 <button
                   type="button"
-                  onClick={commitScheduleEntry}
-                  title={
-                    !(
-                      scheduleModalToCoords &&
-                      scheduleModalTo.trim() &&
-                      (scheduleModalFromUseCL || (scheduleModalFrom.trim() && scheduleModalFromCoords))
-                    )
-                      ? "请填写目的地并从下拉列表中选择地点以保存坐标"
-                      : undefined
-                  }
+                  onClick={() => commitScheduleEntry()}
                   disabled={
-                    !(
-                      scheduleModalToCoords &&
-                      scheduleModalTo.trim() &&
-                      (scheduleModalFromUseCL || (scheduleModalFrom.trim() && scheduleModalFromCoords))
-                    )
+                    scheduleModalCommitting ||
+                    !scheduleModalTo.trim() ||
+                    !(scheduleModalFromUseCL || scheduleModalFrom.trim())
                   }
                   style={{
                     flex: 1,
-                    padding: "14px 16px",
-                    borderRadius: 12,
+                    padding: "12px 14px",
+                    borderRadius: 10,
                     border: "none",
-                    fontSize: 16,
+                    background: "#ffffff",
+                    color: RIDER_PRIMARY,
                     fontWeight: 700,
+                    fontSize: 14,
                     cursor:
-                      scheduleModalToCoords &&
-                      scheduleModalTo.trim() &&
-                      (scheduleModalFromUseCL || (scheduleModalFrom.trim() && scheduleModalFromCoords))
-                        ? "pointer"
-                        : "not-allowed",
+                      scheduleModalCommitting ||
+                      !scheduleModalTo.trim() ||
+                      !(scheduleModalFromUseCL || scheduleModalFrom.trim())
+                        ? "not-allowed"
+                        : "pointer",
                     fontFamily: "'Inter', system-ui, sans-serif",
-                    background:
-                      scheduleModalToCoords &&
-                      scheduleModalTo.trim() &&
-                      (scheduleModalFromUseCL || (scheduleModalFrom.trim() && scheduleModalFromCoords))
-                        ? "#3b82f6"
-                        : "rgba(255,255,255,0.14)",
-                    color: "#ffffff",
                     opacity:
-                      scheduleModalToCoords &&
-                      scheduleModalTo.trim() &&
-                      (scheduleModalFromUseCL || (scheduleModalFrom.trim() && scheduleModalFromCoords))
-                        ? 1
-                        : 0.65,
+                      scheduleModalCommitting ||
+                      !scheduleModalTo.trim() ||
+                      !(scheduleModalFromUseCL || scheduleModalFrom.trim())
+                        ? 0.45
+                        : 1,
                   }}
                 >
-                  保存到时间表
+                  {scheduleModalCommitting ? "保存中…" : "保存到时间表"}
                 </button>
               </div>
             </div>
@@ -3461,42 +4124,45 @@ export default function CollegeRide() {
               background: "#000",
             }}
           >
-            {pickupTimeMenuOpen && (
-              <>
-                <div
-                  role="presentation"
-                  aria-hidden
-                  onClick={closePickupMenuAnimated}
-                  style={{
-                    position: "fixed",
-                    inset: 0,
-                    background: "rgba(0,0,0,0.5)",
-                    zIndex: 100001,
-                  }}
-                />
-                <div
-                  role="dialog"
-                  aria-modal="true"
-                  aria-label="接载时间"
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    position: "fixed",
-                    left: pickupPopoverPos.x,
-                    top: pickupPopoverPos.y,
-                    transform: "translate(-50%, -50%)",
-                    zIndex: 100002,
-                    width: "min(380px, calc(100vw - 24px))",
-                    maxHeight: "min(72vh, 540px)",
-                    overflowY: "auto",
-                    overflowX: "hidden",
-                    background: "#ffffff",
-                    borderRadius: 16,
-                    boxShadow: "0 16px 48px rgba(0,0,0,0.28)",
-                    padding: 16,
-                    color: themePrimary,
-                    fontFamily: "'Inter', system-ui, sans-serif",
-                  }}
-                >
+            {pickupTimeMenuOpen &&
+              pickupPopoverLayout &&
+              typeof document !== "undefined" &&
+              createPortal(
+                <>
+                  <div
+                    role="presentation"
+                    aria-hidden
+                    onClick={closePickupMenuAnimated}
+                    style={{
+                      position: "fixed",
+                      inset: 0,
+                      background: "rgba(0,0,0,0.5)",
+                      zIndex: 100001,
+                    }}
+                  />
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="接载时间"
+                    className={pickupPopoverClosing ? "cr-pickup-popover-exit" : "cr-pickup-popover-enter"}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      position: "fixed",
+                      left: pickupPopoverLayout.left,
+                      top: pickupPopoverLayout.top,
+                      width: pickupPopoverLayout.width,
+                      maxHeight: pickupPopoverLayout.maxH,
+                      zIndex: 100002,
+                      overflowY: "auto",
+                      overflowX: "hidden",
+                      background: "#ffffff",
+                      borderRadius: 16,
+                      boxShadow: "0 16px 48px rgba(0,0,0,0.28)",
+                      padding: 16,
+                      color: themePrimary,
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                    }}
+                  >
                   <div style={{ fontSize: 14, fontWeight: 700, color: themePrimary, marginBottom: 12 }}>接载时间</div>
                   <button
                     type="button"
@@ -3627,16 +4293,6 @@ export default function CollegeRide() {
                     >
                       <div
                         style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: "rgba(0,51,153,0.75)",
-                          marginBottom: 10,
-                        }}
-                      >
-                        滑动选择日期与时间
-                      </div>
-                      <div
-                        style={{
                           display: "flex",
                           gap: 8,
                           alignItems: "stretch",
@@ -3687,8 +4343,9 @@ export default function CollegeRide() {
                     </div>
                   </div>
                 </div>
-              </>
-            )}
+                </>,
+                document.body
+              )}
             <div style={{ flex: 1, minHeight: 0, position: "relative", height: "100vh" }}>
               <Map
                 key={`plan-${planModalMapCenter.lat}-${planModalMapCenter.lng}`}
@@ -3775,6 +4432,8 @@ export default function CollegeRide() {
                   onClick={() => {
                     if (pickupTimeMenuOpen) closePickupMenuAnimated();
                     else {
+                      setPickupPopoverLayout(null);
+                      setPickupPopoverClosing(false);
                       setPickupTimeMenuOpen(true);
                       setPickupTimeMenuExpanded(pickupTimeMode === "scheduled");
                       setPickupMenuHighlight(pickupTimeMode === "scheduled" ? "scheduled" : "immediate");
@@ -4037,8 +4696,10 @@ export default function CollegeRide() {
                         onCoordsChange={setRiderFromCoords}
                         onFocus={onOriginInputFocus}
                         onBlur={onOriginInputBlur}
-                        placeholder={fromUseCurrentLocation ? "当前位置（或在此搜索地址）" : "搜索出发地"}
+                        placeholder={fromUseCurrentLocation ? "当前位置" : "英文/中文地址或地点名"}
                         variant="dark"
+                        biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                        biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
                         icon={
                           <span
                             style={{
@@ -4085,8 +4746,10 @@ export default function CollegeRide() {
                         value={riderTo}
                         onChange={handleRiderToChange}
                         onCoordsChange={setRiderToCoords}
-                        placeholder={planTripFocus === "to" ? "您想去哪里？" : "搜索目的地"}
+                        placeholder={planTripFocus === "to" ? "英文/中文地址或地点名" : "英文/中文地址或地点名"}
                         variant="dark"
+                        biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
+                        biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
                         icon={
                           <span
                             style={{
@@ -4129,6 +4792,7 @@ export default function CollegeRide() {
                       >
                         <input
                           type="checkbox"
+                          className="cr-checkbox"
                           checked={planTripReturnEnabled}
                           onChange={(e) => {
                             const on = e.target.checked;
@@ -4138,7 +4802,12 @@ export default function CollegeRide() {
                               setReturnWheelKey((k) => k + 1);
                             }
                           }}
-                          style={{ width: 18, height: 18, accentColor: "#fff", cursor: "pointer" }}
+                          style={{
+                            cursor: "pointer",
+                            ["--cr-checkbox-border"]: "rgba(255,255,255,0.78)",
+                            ["--cr-checkbox-fill"]: "#ffffff",
+                            ["--cr-checkbox-dot"]: colors.navy,
+                          }}
                         />
                         添加返程
                       </label>
@@ -4154,7 +4823,7 @@ export default function CollegeRide() {
                               marginBottom: 8,
                             }}
                           >
-                            返程时间
+                            返程时间（24 小时制）
                           </div>
                           <div
                             style={{

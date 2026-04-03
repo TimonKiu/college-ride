@@ -2,3 +2,45 @@
   background: transparent !important;
   border: none !important;
 }
+
+/* 统一：勾选框为圆环 + 选中时实心圆 + 内点（非系统方框） */
+input.cr-checkbox[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--cr-checkbox-border, #003399);
+  background: var(--cr-checkbox-bg, transparent);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin: 0;
+  position: relative;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+input.cr-checkbox[type="checkbox"]:checked {
+  background: var(--cr-checkbox-fill, #003399);
+  border-color: var(--cr-checkbox-fill, #003399);
+}
+
+input.cr-checkbox[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cr-checkbox-dot, #ffffff);
+}
+
+input.cr-checkbox[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--cr-checkbox-border, #003399);
+  outline-offset: 2px;
+}
