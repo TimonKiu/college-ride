@@ -43,6 +43,23 @@ export default function AuthScreens() {
     []
   );
 
+  const registerFormComplete = useMemo(() => {
+    const em = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return false;
+    if (!isInstitutionalEduEmail(em)) return false;
+    if (password.length < 8) return false;
+    if (password2.length < 8 || password !== password2) return false;
+    if (!displayName.trim()) return false;
+    if (!tosAccepted) return false;
+    return true;
+  }, [email, password, password2, displayName, tosAccepted]);
+
+  const submitDisabled = useMemo(() => {
+    if (pending) return true;
+    if (mode === "register") return !registerFormComplete;
+    return false;
+  }, [pending, mode, registerFormComplete]);
+
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
@@ -93,6 +110,10 @@ export default function AuthScreens() {
     }
     if (password !== password2) {
       setError(s.err_password_match);
+      return;
+    }
+    if (!displayName.trim()) {
+      setError(s.err_display_name);
       return;
     }
     if (!tosAccepted) {
@@ -260,6 +281,8 @@ export default function AuthScreens() {
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder={s.ph_display}
                 style={inputStyle}
+                required
+                autoComplete="name"
               />
               <label style={labelStyle}>{s.school_auto}</label>
               {isInstitutionalEduEmail(email.trim()) ? (
@@ -346,7 +369,7 @@ export default function AuthScreens() {
 
           <button
             type="submit"
-            disabled={pending || (mode === "register" && !tosAccepted)}
+            disabled={submitDisabled}
             style={{
               width: "100%",
               marginTop: 6,
@@ -357,8 +380,8 @@ export default function AuthScreens() {
               color: "#fff",
               fontSize: 16,
               fontWeight: 700,
-              cursor: pending || (mode === "register" && !tosAccepted) ? "not-allowed" : "pointer",
-              opacity: pending || (mode === "register" && !tosAccepted) ? 0.55 : 1,
+              cursor: submitDisabled ? "not-allowed" : "pointer",
+              opacity: submitDisabled ? 0.55 : 1,
               fontFamily: FONT,
             }}
           >

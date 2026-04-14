@@ -6,6 +6,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./map.css";
 import { COLLEGE_VECTOR_MAP_STYLE, applyCollegeRoadHierarchy } from "./collegeRoadMapStyle.js";
 import { useAuth } from "./auth/AuthContext.jsx";
+import { isSupabaseConfigured } from "./supabase/client.js";
+import { fetchPublishedRides, insertPublishedRide } from "./api/publishedRides.js";
 import {
   emptyLedger,
   loadUserLedger,
@@ -383,8 +385,7 @@ function getNearestBuilding(lat, lng) {
   return { nearest, nearestKm };
 }
 
-/** 可替换为后端返回的待匹配列表；预览默认空，由行程完成后本地账本累计 */
-const RIDES_LISTING_POOL = [];
+/** 乘客请求仍为空，可后续接表；拼车列表见 published_rides + fetchPublishedRides */
 const DRIVER_REQUESTS_POOL = [];
 
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
@@ -618,7 +619,7 @@ function MapPickerPanel({ onPick, onClose, lineColor, center, userLocation }) {
         onLoad={(e) => applyCollegeRoadHierarchy(e.target)}
         onClick={(ev) => {
           const { lat, lng } = ev.lngLat;
-          onPick(nearestPlaceName(lat, lng));
+          onPick({ name: nearestPlaceName(lat, lng), lat, lng });
         }}
       >
         <UserLocationMarker lat={userLocation?.lat} lng={userLocation?.lng} />
@@ -1812,6 +1813,11 @@ export default function CollegeRide() {
   const [publishFrom, setPublishFrom] = useState("");
   const [publishTo, setPublishTo] = useState("");
   const [publishDepartTime, setPublishDepartTime] = useState("");
+  const [publishFromLat, setPublishFromLat] = useState(null);
+  const [publishFromLng, setPublishFromLng] = useState(null);
+  const [publishedRides, setPublishedRides] = useState([]);
+  const [publishSubmitting, setPublishSubmitting] = useState(false);
+  const [publishFormError, setPublishFormError] = useState("");
   const [driverPublishToast, setDriverPublishToast] = useState("");
   const [driverPublishModalOpen, setDriverPublishModalOpen] = useState(false);
   const [driverPublishModalClosing, setDriverPublishModalClosing] = useState(false);
@@ -2086,6 +2092,21 @@ export default function CollegeRide() {
   useEffect(() => {
     if (role === "driver" && tab === "post") setTab("find");
   }, [role, tab]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setPublishedRides([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await fetchPublishedRides();
+      if (!cancelled) setPublishedRides(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     persistCommonRoutes(commonRoutes);
@@ -2718,14 +2739,18 @@ export default function CollegeRide() {
 
   const matchedRides = useMemo(() => {
     const MAX_KM = 40;
-    const scored = RIDES_LISTING_POOL.map((r) => ({
-      ...r,
-      _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
-    }));
+    const scored = publishedRides.map((r) => {
+      const fl = r.fromLat ?? activeCampus.lat;
+      const flng = r.fromLng ?? activeCampus.lng;
+      return {
+        ...r,
+        _km: approxKm(activeCampus.lat, activeCampus.lng, fl, flng),
+      };
+    });
     scored.sort((a, b) => a._km - b._km);
     const filtered = scored.filter((r) => r._km <= MAX_KM);
     return filtered.length ? filtered : scored;
-  }, [activeCampus]);
+  }, [activeCampus, publishedRides]);
 
   const matchedRequests = useMemo(() => {
     const MAX_KM = 40;
@@ -3074,10 +3099,10 @@ export default function CollegeRide() {
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{t("label_route_map")}</div>
             <TripRouteMap
-              fromLat={selectedRide.fromLat}
-              fromLng={selectedRide.fromLng}
-              toLat={selectedRide.toLat}
-              toLng={selectedRide.toLng}
+              fromLat={selectedRide.fromLat ?? activeCampus.lat}
+              fromLng={selectedRide.fromLng ?? activeCampus.lng}
+              toLat={selectedRide.toLat ?? activeCampus.lat}
+              toLng={selectedRide.toLng ?? activeCampus.lng}
               lineColor={themePrimary}
               userLocation={currentLocationCoords}
               loadingText={t("label_loading_route")}
@@ -3626,7 +3651,10 @@ export default function CollegeRide() {
           <>
             <button
               type="button"
-              onClick={() => setDriverPublishModalOpen(true)}
+              onClick={() => {
+                setPublishFormError("");
+                setDriverPublishModalOpen(true);
+              }}
               style={{
                 width: "100%",
                 display: "flex",
@@ -3796,8 +3824,10 @@ export default function CollegeRide() {
                       lineColor={colors.navy}
                       center={mapPickerCenter}
                       userLocation={currentLocationCoords}
-                      onPick={(name) => {
+                      onPick={({ name, lat, lng }) => {
                         setPublishFrom(name);
+                        setPublishFromLat(lat);
+                        setPublishFromLng(lng);
                         setMapPicker(null);
                       }}
                       onClose={() => setMapPicker(null)}
@@ -3852,6 +3882,9 @@ export default function CollegeRide() {
                     <div style={{ fontSize: 14, color: colors.navy, fontWeight: 600 }}>{t("driver_price_card_title")}</div>
                     <div style={{ fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 1.5 }}>{t("platform_fee_driver_blurb")}</div>
                   </div>
+                  {publishFormError ? (
+                    <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12, fontWeight: 500, lineHeight: 1.45 }}>{publishFormError}</div>
+                  ) : null}
                     </div>
                     <div
                       style={{
@@ -3863,14 +3896,90 @@ export default function CollegeRide() {
                     >
                       <button
                         type="button"
-                        style={{ ...styles.btn, marginBottom: 0 }}
-                        onClick={() => {
-                          setDriverPublishToast(t("publish_toast"));
-                          window.setTimeout(() => setDriverPublishToast(""), 2800);
-                          beginCloseDriverPublishModal();
+                        disabled={publishSubmitting}
+                        style={{
+                          ...styles.btn,
+                          marginBottom: 0,
+                          opacity: publishSubmitting ? 0.65 : 1,
+                          cursor: publishSubmitting ? "not-allowed" : "pointer",
+                        }}
+                        onClick={async () => {
+                          setPublishFormError("");
+                          const fromT = publishFrom.trim();
+                          const toT = publishTo.trim();
+                          const timeT = publishDepartTime.trim();
+                          if (!fromT || !toT || !timeT) {
+                            setPublishFormError(
+                              lang === "zh" ? "请填写出发地、目的地和出发时间。" : "Fill in origin, destination, and departure time."
+                            );
+                            return;
+                          }
+                          if (!isSupabaseConfigured) {
+                            setPublishFormError(
+                              lang === "zh" ? "未配置云端（VITE_SUPABASE_*），无法发布。" : "Supabase env vars missing; cannot publish."
+                            );
+                            return;
+                          }
+                          setPublishSubmitting(true);
+                          try {
+                            const bias = { lat: activeCampus.lat, lon: activeCampus.lng };
+                            let fromCoords =
+                              publishFromLat != null && publishFromLng != null
+                                ? { lat: publishFromLat, lng: publishFromLng }
+                                : await geocodePhotonFirst(fromT, bias);
+                            const toCoords = await geocodePhotonFirst(toT, bias);
+                            if (!fromCoords || !toCoords) {
+                              setPublishFormError(
+                                lang === "zh"
+                                  ? "无法解析地址，请写得更具体或稍后再试。"
+                                  : "Could not geocode addresses. Try a more specific place."
+                              );
+                              return;
+                            }
+                            const { error } = await insertPublishedRide({
+                              driverName: user?.displayName?.trim() || user?.email?.split("@")[0] || "Driver",
+                              school: user?.school || "",
+                              from: fromT,
+                              to: toT,
+                              fromLat: fromCoords.lat,
+                              fromLng: fromCoords.lng,
+                              toLat: toCoords.lat,
+                              toLng: toCoords.lng,
+                              departTime: timeT,
+                              seats: postSeats,
+                              price: 8.5,
+                              detour: "+10 min",
+                            });
+                            if (error) {
+                              const msg =
+                                error.message === "SUPABASE_NOT_CONFIGURED"
+                                  ? lang === "zh"
+                                    ? "未配置 Supabase。"
+                                    : "Supabase not configured."
+                                  : error.message === "NOT_SIGNED_IN"
+                                    ? lang === "zh"
+                                      ? "请先登录。"
+                                      : "Sign in required."
+                                    : error.message;
+                              setPublishFormError(msg);
+                              return;
+                            }
+                            const { data: refreshed } = await fetchPublishedRides();
+                            setPublishedRides(refreshed);
+                            setDriverPublishToast(t("publish_toast"));
+                            window.setTimeout(() => setDriverPublishToast(""), 2800);
+                            beginCloseDriverPublishModal();
+                            setPublishFrom("");
+                            setPublishTo("");
+                            setPublishDepartTime("");
+                            setPublishFromLat(null);
+                            setPublishFromLng(null);
+                          } finally {
+                            setPublishSubmitting(false);
+                          }
                         }}
                       >
-                        {t("btn_publish_trip")}
+                        {publishSubmitting ? (lang === "zh" ? "发布中…" : "Publishing…") : t("btn_publish_trip")}
                       </button>
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabase, isSupabaseConfigured } from "../supabase/client.js";
 import { isInstitutionalEduEmail } from "./eduEmail.js";
 import { getSchoolFromEmail } from "./schoolFromEmail.js";
 
@@ -7,17 +7,7 @@ const DEFAULT_SCHOOL = "Johns Hopkins University";
 const LS_USERS = "cr-local-auth-users-v1";
 const LS_SESSION = "cr-local-auth-session-v1";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-export const authMode = supabaseUrl && supabaseAnon ? "supabase" : "local";
-
-let supabaseClient = null;
-if (authMode === "supabase") {
-  supabaseClient = createClient(supabaseUrl, supabaseAnon, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-  });
-}
+export const authMode = isSupabaseConfigured ? "supabase" : "local";
 
 async function sha256Hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -105,7 +95,7 @@ export async function signUp({ email, password, displayName }) {
   }
   const schoolName = getSchoolFromEmail(em);
   if (authMode === "supabase") {
-    const { data, error } = await supabaseClient.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: em,
       password,
       options: {
@@ -144,7 +134,7 @@ export async function signIn({ email, password }) {
     throw new Error("NOT_EDU");
   }
   if (authMode === "supabase") {
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email: em, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email: em, password });
     if (error) throw new Error(error.message);
     return { user: mapSupabaseUser(data.user) };
   }
@@ -161,7 +151,7 @@ export async function signIn({ email, password }) {
 
 export async function signOut() {
   if (authMode === "supabase") {
-    await supabaseClient.auth.signOut();
+    await supabase.auth.signOut();
   } else {
     setLocalSession(null);
   }
@@ -169,7 +159,7 @@ export async function signOut() {
 
 export async function getSessionUser() {
   if (authMode === "supabase") {
-    const { data } = await supabaseClient.auth.getUser();
+    const { data } = await supabase.auth.getUser();
     return mapSupabaseUser(data.user);
   }
   return getLocalSessionUser();
@@ -177,7 +167,7 @@ export async function getSessionUser() {
 
 export function onAuthChange(callback) {
   if (authMode === "supabase") {
-    const { data: sub } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       callback(mapSupabaseUser(session?.user ?? null));
     });
     return () => sub.subscription.unsubscribe();

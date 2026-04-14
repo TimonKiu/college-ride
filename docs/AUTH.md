@@ -12,6 +12,7 @@
    ```
 
 4. Restart `npm run dev`.
+5. **拼车列表（发布行程）**：在 Supabase **SQL Editor** 中执行 `supabase/migrations/20260403120000_published_rides.sql` 全文，创建 `published_rides` 表并启用 RLS。未执行时，登录正常，但发布拼车会返回数据库错误。
 
 ## Local mode
 
