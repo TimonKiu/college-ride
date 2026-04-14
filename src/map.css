@@ -3,6 +3,168 @@
   border: none !important;
 }
 
+/* ── 导航栈：带「前进」语义（如 chevron 右）的下一屏从右侧滑入；返回（chevron 左）整层向右滑出 ── */
+:root {
+  --cr-stack-ms: 200ms;
+  --cr-modal-ms: 220ms;
+}
+
+@keyframes cr-stack-slide-in {
+  from {
+    transform: translate3d(100%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes cr-stack-slide-out {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.cr-stack-layer {
+  animation: cr-stack-slide-in var(--cr-stack-ms) ease-out both;
+}
+
+.cr-stack-layer.cr-stack-layer-exit {
+  animation: cr-stack-slide-out var(--cr-stack-ms) ease-out forwards;
+}
+
+/* 与历史实现兼容：语言全屏层 */
+.cr-profile-lang-fullscreen {
+  animation: cr-stack-slide-in var(--cr-stack-ms) ease-out both;
+}
+
+.cr-profile-lang-exit {
+  animation: cr-stack-slide-out var(--cr-stack-ms) ease-out forwards;
+}
+
+/* 居中弹窗：遮罩淡入，内容自下方轻微上浮（无箭头时仍保持「展开」感） */
+@keyframes cr-modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes cr-modal-backdrop-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes cr-modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes cr-modal-panel-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.98);
+  }
+}
+
+.cr-modal-backdrop-anim {
+  animation: cr-modal-backdrop-in 200ms ease-out both;
+}
+
+.cr-modal-backdrop-anim.cr-modal-backdrop-exit {
+  animation: cr-modal-backdrop-out 180ms ease-in forwards;
+}
+
+.cr-modal-panel-anim {
+  animation: cr-modal-panel-in var(--cr-modal-ms) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.cr-modal-panel-anim.cr-modal-panel-exit {
+  animation: cr-modal-panel-out 180ms ease-in forwards;
+}
+
+/* 司机「发布路线」：全屏层自底部上滑 / 下滑收起，200ms */
+@keyframes cr-publish-sheet-in {
+  from {
+    transform: translate3d(0, 100%, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes cr-publish-sheet-out {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 100%, 0);
+  }
+}
+
+.cr-driver-publish-backdrop {
+  animation: cr-modal-backdrop-in 200ms ease-out both;
+}
+
+.cr-driver-publish-backdrop.cr-driver-publish-backdrop-exit {
+  animation: cr-modal-backdrop-out 200ms ease-in forwards;
+}
+
+.cr-driver-publish-sheet {
+  animation: cr-publish-sheet-in 200ms ease-out both;
+}
+
+.cr-driver-publish-sheet.cr-driver-publish-sheet-exit {
+  animation: cr-publish-sheet-out 200ms ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cr-stack-layer,
+  .cr-stack-layer-exit,
+  .cr-profile-lang-fullscreen,
+  .cr-profile-lang-exit,
+  .cr-modal-backdrop-anim,
+  .cr-modal-backdrop-exit,
+  .cr-modal-panel-anim,
+  .cr-modal-panel-exit {
+    animation: none !important;
+  }
+
+  .cr-driver-publish-backdrop,
+  .cr-driver-publish-backdrop-exit,
+  .cr-driver-publish-sheet,
+  .cr-driver-publish-sheet-exit {
+    animation: none !important;
+  }
+
+  .cr-modal-backdrop-anim {
+    opacity: 1;
+  }
+
+  .cr-modal-panel-anim {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* 统一：勾选框为圆环 + 选中时实心圆 + 内点（非系统方框） */
 input.cr-checkbox[type="checkbox"] {
   appearance: none;
@@ -12,7 +174,7 @@ input.cr-checkbox[type="checkbox"] {
   min-width: 18px;
   min-height: 18px;
   border-radius: 50%;
-  border: 2px solid var(--cr-checkbox-border, #003399);
+  border: 2px solid var(--cr-checkbox-border, #2563EB);
   background: var(--cr-checkbox-bg, transparent);
   cursor: pointer;
   flex-shrink: 0;
@@ -24,8 +186,8 @@ input.cr-checkbox[type="checkbox"] {
 }
 
 input.cr-checkbox[type="checkbox"]:checked {
-  background: var(--cr-checkbox-fill, #003399);
-  border-color: var(--cr-checkbox-fill, #003399);
+  background: var(--cr-checkbox-fill, #2563EB);
+  border-color: var(--cr-checkbox-fill, #2563EB);
 }
 
 input.cr-checkbox[type="checkbox"]:checked::after {
@@ -41,6 +203,6 @@ input.cr-checkbox[type="checkbox"]:checked::after {
 }
 
 input.cr-checkbox[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--cr-checkbox-border, #003399);
+  outline: 2px solid var(--cr-checkbox-border, #2563EB);
   outline-offset: 2px;
 }

@@ -5,6 +5,7 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./map.css";
 import { COLLEGE_VECTOR_MAP_STYLE, applyCollegeRoadHierarchy } from "./collegeRoadMapStyle.js";
+import { useAuth } from "./auth/AuthContext.jsx";
 
 function UserLocationMarker({ lat, lng }) {
   if (lat == null || lng == null) return null;
@@ -18,13 +19,13 @@ function UserLocationMarker({ lat, lng }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          filter: "drop-shadow(0 2px 5px rgba(0,51,153,0.4))",
+          filter: "drop-shadow(0 2px 5px rgba(37,99,235,0.4))",
         }}
       >
         <svg width="28" height="36" viewBox="0 0 24 34" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
           <path
             d="M12 2C7.58 2 4 5.58 4 10c0 6.5 8 14 8 14s8-7.5 8-14c0-4.42-3.58-8-8-8z"
-            fill="#003399"
+            fill="#2563EB"
             stroke="#ffffff"
             strokeWidth="1.5"
           />
@@ -37,6 +38,15 @@ function UserLocationMarker({ lat, lng }) {
 
 /** 登录确定；未接登录前默认 JHU */
 const USER_SCHOOL = "Johns Hopkins University";
+
+/** 语言全屏层进出场动画时长（与 map.css --cr-stack-ms 一致） */
+const PROFILE_LANG_ANIM_MS = 200;
+/** 横向栈（详情 / 规划全屏）与语言层共用 */
+const STACK_ANIM_MS = PROFILE_LANG_ANIM_MS;
+/** 居中弹窗退场：与 map.css 中 backdrop/panel exit 时长对齐（取较长段 + 余量） */
+const MODAL_EXIT_MS = 220;
+/** 司机发布路线全屏底栏：与 map.css cr-publish-sheet 一致 */
+const DRIVER_PUBLISH_SHEET_MS = 200;
 
 const JHU_LOCATIONS = [
   { id: "apl", label: "APL · Applied Physics Laboratory", short: "APL", lat: 39.1719, lng: -76.8686 },
@@ -547,6 +557,19 @@ const Icons = {
       <path d="m15 18-6-6 6-6" />
     </Icon>
   ),
+  chevronRight: (
+    <Icon>
+      <path d="m9 18 6-6-6-6" />
+    </Icon>
+  ),
+  /** 设置项：语言（线框地球，非 emoji） */
+  globe: (
+    <Icon stroke={1.65}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <ellipse cx="12" cy="12" rx="4" ry="10" />
+    </Icon>
+  ),
   chevronDown: (
     <Icon>
       <path d="m6 9 6 6 6-6" />
@@ -574,8 +597,8 @@ const Icons = {
   ),
 };
 
-const RIDER_PRIMARY = "#003399";
-const RIDER_RGB = "0, 51, 153";
+const RIDER_PRIMARY = "#2563EB";
+const RIDER_RGB = "37, 99, 235";
 /** 司机模式主题 */
 const DRIVER_PRIMARY = "#0a0a0a";
 const DRIVER_RGB = "10, 10, 10";
@@ -1051,8 +1074,8 @@ function hour24ToGlobalHourIndex(h24) {
   return gi;
 }
 
-/** 浅色轮盘：白底区域用主题蓝字（#003399） */
-const WHEEL_LIGHT_RGB = "0, 51, 153";
+/** 浅色轮盘：白底区域用主题蓝字（与乘客端 RIDER_PRIMARY 一致） */
+const WHEEL_LIGHT_RGB = "37, 99, 235";
 const WHEEL_LABEL_ROW_MIN_H = 28;
 
 function WheelScrollColumn({
@@ -1065,6 +1088,7 @@ function WheelScrollColumn({
   embedded,
   variant = "dark",
   rebound,
+  accentRgb = WHEEL_LIGHT_RGB,
 }) {
   const scrollRef = useRef(null);
   /** 与视口滚动同步，用于按「中间框」位置计算各行与中心线的距离（非系统时间） */
@@ -1132,9 +1156,9 @@ function WheelScrollColumn({
         background: embedded
           ? "transparent"
           : isLight
-            ? "rgba(0,51,153,0.06)"
+            ? "rgba(37,99,235,0.06)"
             : "rgba(0,0,0,0.22)",
-        border: embedded ? "none" : isLight ? "1px solid rgba(0,51,153,0.2)" : "1px solid rgba(255,255,255,0.12)",
+        border: embedded ? "none" : isLight ? "1px solid rgba(37,99,235,0.2)" : "1px solid rgba(255,255,255,0.12)",
         overflow: "hidden",
       }}
     >
@@ -1148,9 +1172,9 @@ function WheelScrollColumn({
           transform: "translateY(-50%)",
           height: ITEM_H,
           borderRadius: 8,
-          border: isLight ? "2px solid rgba(0,51,153,0.55)" : "2px solid rgba(255,255,255,0.55)",
+          border: isLight ? "2px solid rgba(37,99,235,0.55)" : "2px solid rgba(255,255,255,0.55)",
           boxShadow: isLight
-            ? "0 0 0 1px rgba(0,51,153,0.12), inset 0 0 8px rgba(0,51,153,0.06)"
+            ? "0 0 0 1px rgba(37,99,235,0.12), inset 0 0 8px rgba(37,99,235,0.06)"
             : "0 0 0 1px rgba(0,0,0,0.25), inset 0 0 12px rgba(255,255,255,0.08)",
           zIndex: 2,
         }}
@@ -1189,7 +1213,7 @@ function WheelScrollColumn({
             const distRows = Math.abs(rowCenterY - viewCenterY) / ITEM_H;
             const opacity = 1 - Math.min(0.78, distRows * 0.26);
             const isCenter = distRows < 0.51;
-            const textColor = isLight ? `rgba(${WHEEL_LIGHT_RGB},${opacity})` : `rgba(255,255,255,${opacity})`;
+            const textColor = isLight ? `rgba(${accentRgb},${opacity})` : `rgba(255,255,255,${opacity})`;
             return (
               <div
                 key={opt instanceof Date ? opt.getTime() : `${i}-${String(opt)}`}
@@ -1230,7 +1254,7 @@ function WheelScrollColumn({
             minHeight: WHEEL_LABEL_ROW_MIN_H,
             display: "flex",
             alignItems: "center",
-            color: isLight ? "rgba(0,51,153,0.75)" : undefined,
+            color: isLight ? "rgba(37,99,235,0.75)" : undefined,
             opacity: isLight ? 1 : 0.75,
           }}
         >
@@ -1243,7 +1267,7 @@ function WheelScrollColumn({
 }
 
 /** 时间：24 小时 + : + 分钟；与日期列同高、选中框对齐 */
-function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, variant = "dark", hideLabel = false }) {
+function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, variant = "dark", hideLabel = false, accentRgb = WHEEL_LIGHT_RGB, label = "时间" }) {
   const isLight = variant === "light";
   const [hourGi, setHourGi] = useState(() => hour24ToGlobalHourIndex(hour24));
 
@@ -1260,8 +1284,8 @@ function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, v
     []
   );
 
-  const borderStyle = isLight ? "2px solid rgba(0,51,153,0.35)" : "2px solid rgba(255,255,255,0.5)";
-  const bgStyle = isLight ? "rgba(0,51,153,0.04)" : "rgba(0,0,0,0.22)";
+  const borderStyle = isLight ? "2px solid rgba(37,99,235,0.35)" : "2px solid rgba(255,255,255,0.5)";
+  const bgStyle = isLight ? "rgba(37,99,235,0.04)" : "rgba(0,0,0,0.22)";
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -1274,11 +1298,11 @@ function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, v
             minHeight: WHEEL_LABEL_ROW_MIN_H,
             display: "flex",
             alignItems: "center",
-            color: isLight ? "rgba(0,51,153,0.75)" : undefined,
+            color: isLight ? "rgba(37,99,235,0.75)" : undefined,
             opacity: isLight ? 1 : 0.75,
           }}
         >
-          时间
+          {label}
         </div>
       )}
       <div
@@ -1311,7 +1335,7 @@ function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, v
           style={{
             fontSize: 22,
             fontWeight: 700,
-            color: isLight ? "rgba(0,51,153,0.9)" : "rgba(255,255,255,0.92)",
+            color: isLight ? "rgba(37,99,235,0.9)" : "rgba(255,255,255,0.92)",
             paddingBottom: 2,
             flexShrink: 0,
             userSelect: "none",
@@ -1333,7 +1357,7 @@ function TimeHourMinuteBlock({ hour24, minute, onHour24Change, onMinuteChange, v
   );
 }
 
-function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY, userLocation }) {
+function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY, userLocation, loadingText = "加载路线中…" }) {
   const mapRef = useRef(null);
   const [path, setPath] = useState(() => [
     [fromLat, fromLng],
@@ -1411,7 +1435,7 @@ function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY, use
             fontWeight: 500,
           }}
         >
-          加载路线中…
+          {loadingText}
         </div>
       )}
       <Map
@@ -1463,8 +1487,360 @@ function TripRouteMap({ fromLat, fromLng, toLat, toLng, lineColor = PRIMARY, use
   );
 }
 
+const STRINGS = {
+  zh: {
+    /* ── 导航栏 ── */
+    nav_find_rider: "找拼车",
+    nav_find_driver: "找乘客",
+    nav_saved: "常用路线",
+    nav_history: "记录",
+    nav_profile: "我的",
+    /* ── 公共 ── */
+    tag_verified: "已验证",
+    tag_verified_student: "已验证学生",
+    label_from: "出发",
+    label_to: "到达",
+    label_per_person: "/ 人",
+    label_seats_n: "{n} 席",
+    label_detour: "绕路 {d}",
+    label_route: "路线",
+    label_date: "日期",
+    label_time: "时间",
+    btn_cancel: "取消",
+    btn_save: "保存",
+    btn_saving: "保存中…",
+    btn_done: "完成",
+    ph_address: "英文/中文地址或地点名",
+    ph_destination: "楼、店铺、公寓或地址",
+    /* ── 乘客 find tab ── */
+    section_nearby: "附近行程",
+    headline_matches: "共 {count} 条匹配",
+    desc_nearby: "根据你在「{campus}」的位置，优先展示附近可搭乘的行程",
+    tag_ref_price: "参考价（网约车）",
+    tag_save_pct: "省 {pct}%",
+    map_disclaimer: "路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。",
+    booking_confirmed_title: "预约已确认",
+    booking_confirmed_desc: "{driver} 将于",
+    booking_confirmed_pickup: "接你",
+    btn_confirm_booking: "确认预约",
+    /* ── 规划行程 ── */
+    plan_title: "规划您的行程",
+    plan_for_me: "为我本人",
+    plan_pickup_now: "立即接载",
+    plan_pickup_scheduled: "预约出发",
+    plan_pickup_time_title: "接载时间",
+    plan_origin_label: "出发地",
+    plan_dest_label: "目的地",
+    /* ── 司机 find tab ── */
+    btn_publish_trip: "发布行程",
+    headline_driver_publish: "发布路线",
+    platform_fee_driver_blurb: "按绕路距离自动计价；平台收取约 15%–20% 服务费。",
+    driver_price_card_title: "平台计价",
+    label_map_pick: "从地图选择",
+    modal_publish_title: "发布行程",
+    label_origin: "出发地",
+    label_destination: "目的地",
+    label_depart_time: "出发时间",
+    label_seats_available: "可搭乘座位",
+    label_notes_optional: "备注（选填）",
+    ph_notes: "例：行李空间有限、不接受宠物",
+    section_find_passengers: "找乘客",
+    headline_driver_browse_passengers: "乘客请求",
+    desc_carpool: "根据你在「{campus}」的位置，优先展示附近乘客请求",
+    btn_accept: "接受",
+    btn_accepted: "已接受",
+    label_dist_from_you: "距你约 {km} km",
+    label_route_km: "路线约 {km} km",
+    btn_accept_carpool: "接受顺路",
+    btn_skip: "跳过",
+    label_pickup_point: "乘客上车点",
+    /* ── 发布确认 ── */
+    label_depart_time_colon: "出发时间：",
+    btn_back_edit: "返回修改",
+    btn_confirm_publish: "确认发布",
+    publish_toast: "行程已发布",
+    /* ── 常用路线 tab ── */
+    section_saved: "常用路线",
+    headline_saved: "已保存的路线",
+    desc_saved_rider: "点击下方创建：填写名称、出发点与返回点；出发时间可选。保存后可在「找拼车」一键使用。",
+    desc_saved_driver: "点击下方创建：填写名称、出发点与返回点；出发时间可选。保存后可在「找乘客」一键使用。",
+    btn_create_route: "创建常用路线",
+    label_route_name: "路线名称",
+    ph_route_name: "例如：平日上学、周末回家",
+    cb_use_current_loc: "出发地使用当前位置",
+    label_origin_point: "出发点",
+    label_return_point: "返回点",
+    cb_set_time: "设置出发时间（可选）",
+    label_depart_time_24h: "出发时间 · 24 小时制",
+    empty_saved: "暂无常用路线。点击上方「创建常用路线」添加。",
+    label_current_location: "当前位置",
+    label_origin_fallback: "出发地",
+    label_return_fallback: "返回点",
+    btn_use: "使用",
+    btn_delete: "删除",
+    btn_edit: "编辑",
+    section_weekly: "常用时间表",
+    headline_weekly: "一周安排",
+    desc_weekly: "按星期 + 时间保存固定出行计划；绿点 = 出发，橙点 = 返程。",
+    btn_add_schedule: "添加一周行程",
+    modal_schedule_title: "添加常用行程",
+    modal_schedule_desc: "选择星期、24 小时制出发时间与起终点；可勾选返程并选择返程时间。保存后会出现在一周安排表对应时间与星期格子中。",
+    label_weekday: "星期",
+    cb_return: "返程",
+    label_return_time_24h: "返程时间 · 24 小时制",
+    label_origin_modal: "出发点",
+    label_destination_modal: "目的地",
+    /* ── 历史 tab ── */
+    section_published: "发布",
+    headline_published: "已发布行程",
+    section_history: "记录",
+    headline_history: "行程与节省",
+    tag_driver: "司机",
+    tag_passenger: "乘客",
+    label_you_drove: "你开车",
+    label_driver_was: "司机：{name}",
+    label_seat_price: "{n} 座 · ${price} / 人",
+    history_monthly_label: "本月合计节省",
+    history_monthly_vs: "相较网约车约省 42%",
+    /* ── 个人资料 tab ── */
+    section_account: "账户",
+    headline_profile: "个人资料",
+    stat_total_trips: "总行程",
+    stat_savings: "节省金额",
+    stat_driver_income: "司机收入",
+    stat_carbon: "减碳量",
+    label_school: "学校",
+    btn_logout: "退出登录",
+    /* ── 设置（账户内列表） ── */
+    section_settings: "设置",
+    label_language: "语言",
+    headline_language: "语言",
+    btn_back: "返回",
+    lang_zh: "中文",
+    lang_en: "English",
+    /* ── 删除确认 ── */
+    delete_confirm_title: "删除常用路线",
+    delete_confirm_desc: "确定要删除「{name}」吗？此操作不可撤销。",
+    btn_delete_confirm: "删除",
+    /* ── 行程详情 ── */
+    label_trip_details: "行程详情",
+    label_route_map: "路线地图",
+    label_est_cost: "预计费用",
+    label_amount_due: "应付金额",
+    label_platform_fee: "含平台服务费 10%",
+    label_vs_rideshare: "相较网约车预估更低",
+    label_origin_detail: "出发地",
+    label_dest_detail: "目的地",
+    label_search_trips: "搜索行程",
+    label_route_preview: "路线预览",
+    label_searching: "搜索中…",
+    label_dest_fallback: "目的地",
+    /* ── 首页 ── */
+    tagline: "更便宜，更安全，和同校同学一起上学。",
+    role_rider: "乘客",
+    role_driver: "司机",
+    btn_back_home: "返回主页",
+    ph_where_to: "您想去哪里？",
+    label_seats_left: "剩余座位",
+    label_detour_time: "绕路时间",
+    label_est_earnings: "预计收益",
+    btn_view_details: "查看详情",
+    label_depart_short: "出发",
+    label_return_short: "返程",
+    label_loading_route: "加载路线中…",
+    ph_address_place: "英文/中文地址或地点名（楼、餐厅等）",
+    /* ── 周一～周日 ── */
+    weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+  },
+  en: {
+    /* ── 导航栏 ── */
+    nav_find_rider: "Find Rides",
+    nav_find_driver: "Passengers",
+    nav_saved: "Saved",
+    nav_history: "History",
+    nav_profile: "Profile",
+    /* ── 公共 ── */
+    tag_verified: "Verified",
+    tag_verified_student: "Verified Student",
+    label_from: "From",
+    label_to: "To",
+    label_per_person: "/ person",
+    label_seats_n: "{n} seats",
+    label_detour: "Detour {d}",
+    label_route: "Route",
+    label_date: "Date",
+    label_time: "Time",
+    btn_cancel: "Cancel",
+    btn_save: "Save",
+    btn_saving: "Saving…",
+    btn_done: "Done",
+    ph_address: "Address or place name",
+    ph_destination: "Building, store, apartment or address",
+    /* ── 乘客 find tab ── */
+    section_nearby: "Nearby Trips",
+    headline_matches: "{count} Matches",
+    desc_nearby: "Showing trips near your location at {campus}",
+    tag_ref_price: "Reference (rideshare)",
+    tag_save_pct: "Save {pct}%",
+    map_disclaimer: "Route based on OpenStreetMap / OSRM road network. For reference only.",
+    booking_confirmed_title: "Booking Confirmed",
+    booking_confirmed_desc: "{driver} will pick you up at",
+    booking_confirmed_pickup: "",
+    btn_confirm_booking: "Confirm Booking",
+    /* ── 规划行程 ── */
+    plan_title: "Plan Your Trip",
+    plan_for_me: "For me",
+    plan_pickup_now: "Pick up now",
+    plan_pickup_scheduled: "Schedule pickup",
+    plan_pickup_time_title: "Pickup Time",
+    plan_origin_label: "FROM",
+    plan_dest_label: "TO",
+    /* ── 司机 find tab ── */
+    btn_publish_trip: "Post Trip",
+    headline_driver_publish: "Publish route",
+    platform_fee_driver_blurb: "Auto-priced by detour distance; platform fee about 15–20%.",
+    driver_price_card_title: "Platform pricing",
+    label_map_pick: "Pick on map",
+    modal_publish_title: "Post a Trip",
+    label_origin: "Origin",
+    label_destination: "Destination",
+    label_depart_time: "Departure Time",
+    label_seats_available: "Available Seats",
+    label_notes_optional: "Notes (optional)",
+    ph_notes: "e.g. Limited luggage space, no pets",
+    section_find_passengers: "Find Passengers",
+    headline_driver_browse_passengers: "Passenger requests",
+    desc_carpool: "Showing passenger requests near your location at {campus}",
+    btn_accept: "Accept",
+    btn_accepted: "Accepted",
+    label_dist_from_you: "~{km} km from you",
+    label_route_km: "Route ~{km} km",
+    btn_accept_carpool: "Accept",
+    btn_skip: "Skip",
+    label_pickup_point: "Pickup Point",
+    /* ── 发布确认 ── */
+    label_depart_time_colon: "Departure: ",
+    btn_back_edit: "Back",
+    btn_confirm_publish: "Confirm Post",
+    publish_toast: "Trip posted",
+    /* ── 常用路线 tab ── */
+    section_saved: "Saved Routes",
+    headline_saved: "Your Saved Routes",
+    desc_saved_rider: "Tap below to create: add a name, origin and destination. Departure time optional. Use with one tap in Find Rides.",
+    desc_saved_driver: "Tap below to create: add a name, origin and destination. Departure time optional. Use with one tap in Find Passengers.",
+    btn_create_route: "Create Saved Route",
+    label_route_name: "Route Name",
+    ph_route_name: "e.g. School commute, Weekend home",
+    cb_use_current_loc: "Use current location as origin",
+    label_origin_point: "Origin",
+    label_return_point: "Destination",
+    cb_set_time: "Set departure time (optional)",
+    label_depart_time_24h: "Departure Time (24h)",
+    empty_saved: "No saved routes. Tap \"Create Saved Route\" above to add one.",
+    label_current_location: "Current Location",
+    label_origin_fallback: "Origin",
+    label_return_fallback: "Destination",
+    btn_use: "Use",
+    btn_delete: "Delete",
+    btn_edit: "Edit",
+    section_weekly: "Weekly Schedule",
+    headline_weekly: "Weekly Planner",
+    desc_weekly: "Save recurring trips by day and time. Green dot = departure, orange dot = return.",
+    btn_add_schedule: "Add to Schedule",
+    modal_schedule_title: "Add Recurring Trip",
+    modal_schedule_desc: "Choose a day, 24h departure time, origin and destination. Optionally add a return trip. Saved entries appear in your weekly planner grid.",
+    label_weekday: "Day",
+    cb_return: "Return trip",
+    label_return_time_24h: "Return Time (24h)",
+    label_origin_modal: "Origin",
+    label_destination_modal: "Destination",
+    /* ── 历史 tab ── */
+    section_published: "Published",
+    headline_published: "Published Trips",
+    section_history: "History",
+    headline_history: "Trips & Savings",
+    tag_driver: "Driver",
+    tag_passenger: "Passenger",
+    label_you_drove: "You drove",
+    label_driver_was: "Driver: {name}",
+    label_seat_price: "{n} seats · ${price} / person",
+    history_monthly_label: "Saved this month",
+    history_monthly_vs: "~42% less than rideshare",
+    /* ── 个人资料 tab ── */
+    section_account: "Account",
+    headline_profile: "Profile",
+    stat_total_trips: "Total Trips",
+    stat_savings: "Amount Saved",
+    stat_driver_income: "Driver Earnings",
+    stat_carbon: "CO₂ Reduced",
+    label_school: "School",
+    btn_logout: "Log Out",
+    /* ── Settings (account list) ── */
+    section_settings: "Settings",
+    label_language: "Language",
+    headline_language: "Language",
+    btn_back: "Back",
+    lang_zh: "中文",
+    lang_en: "English",
+    /* ── 删除确认 ── */
+    delete_confirm_title: "Delete Saved Route",
+    delete_confirm_desc: "Delete \"{name}\"? This cannot be undone.",
+    btn_delete_confirm: "Delete",
+    /* ── 行程详情 ── */
+    label_trip_details: "Trip Details",
+    label_route_map: "Route Map",
+    label_est_cost: "Est. Cost",
+    label_amount_due: "Amount Due",
+    label_platform_fee: "Includes 10% platform fee",
+    label_vs_rideshare: "Lower than rideshare estimate",
+    label_origin_detail: "From",
+    label_dest_detail: "To",
+    label_search_trips: "Find a Ride",
+    label_route_preview: "Route Preview",
+    label_searching: "Searching…",
+    label_dest_fallback: "Destination",
+    /* ── 首页 ── */
+    tagline: "Cheaper, safer, ride with classmates.",
+    role_rider: "Rider",
+    role_driver: "Driver",
+    btn_back_home: "Back to Home",
+    ph_where_to: "Where to?",
+    label_seats_left: "Seats Left",
+    label_detour_time: "Detour",
+    label_est_earnings: "Est. Earnings",
+    btn_view_details: "View Details",
+    label_depart_short: "Depart",
+    label_return_short: "Return",
+    label_loading_route: "Loading route…",
+    ph_address_place: "Address or place (building, restaurant, etc.)",
+    /* ── 周一～周日 ── */
+    weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+  },
+};
+
 export default function CollegeRide() {
+  const { user, signOut } = useAuth();
+  const [lang, setLang] = useState(() => localStorage.getItem("cr-lang") || "zh");
+  const t = (key, vars) => {
+    const str = STRINGS[lang]?.[key] ?? STRINGS.zh[key] ?? key;
+    if (!vars) return str;
+    return str.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
+  };
+  const tWeekdays = () => STRINGS[lang]?.weekdays ?? STRINGS.zh.weekdays;
+
+  const schoolDisplay = user?.school ?? USER_SCHOOL;
+  const profileDisplayName =
+    user?.displayName?.trim() || user?.email?.split("@")[0] || (lang === "en" ? "User" : "用户");
+  const profileAvatarInitial = (() => {
+    const raw = user?.displayName?.trim() || user?.email || "?";
+    return raw.slice(0, 1).toUpperCase();
+  })();
+
   const [tab, setTab] = useState("find");
+  /** 我的 tab：设置列表 vs 语言子页 */
+  const [profileSettingsView, setProfileSettingsView] = useState("main");
+  /** 语言全屏层关闭中：播放右滑退出后再卸载 */
+  const [langPanelClosing, setLangPanelClosing] = useState(false);
   const [selectedRide, setSelectedRide] = useState(null);
   const [confirmed, setConfirmed] = useState(false);
   const [jhuLocationId, setJhuLocationId] = useState("gilman-homewood");
@@ -1495,6 +1871,14 @@ export default function CollegeRide() {
   const [routePreviewReady, setRoutePreviewReady] = useState(false);
   const [publishFrom, setPublishFrom] = useState("");
   const [publishTo, setPublishTo] = useState("");
+  const [publishDepartTime, setPublishDepartTime] = useState("");
+  const [driverPublishToast, setDriverPublishToast] = useState("");
+  const [driverPublishModalOpen, setDriverPublishModalOpen] = useState(false);
+  const [driverPublishModalClosing, setDriverPublishModalClosing] = useState(false);
+  const [rideDetailClosing, setRideDetailClosing] = useState(false);
+  const [requestDetailClosing, setRequestDetailClosing] = useState(false);
+  const [planTripClosing, setPlanTripClosing] = useState(false);
+  const [scheduleModalClosing, setScheduleModalClosing] = useState(false);
   const [mapPicker, setMapPicker] = useState(null);
   /** 规划层内「立即接载」：下拉菜单与预约时间 */
   const [pickupTimeMenuOpen, setPickupTimeMenuOpen] = useState(false);
@@ -1575,7 +1959,126 @@ export default function CollegeRide() {
   }, [role, tab]);
 
   useEffect(() => {
-    if (role === "driver" && tab === "saved") setTab("find");
+    if (tab !== "profile") {
+      setProfileSettingsView("main");
+      setLangPanelClosing(false);
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    if (!langPanelClosing) return;
+    const id = window.setTimeout(() => {
+      setProfileSettingsView("main");
+      setLangPanelClosing(false);
+    }, PROFILE_LANG_ANIM_MS);
+    return () => window.clearTimeout(id);
+  }, [langPanelClosing]);
+
+  useEffect(() => {
+    if (!rideDetailClosing) return;
+    const id = window.setTimeout(() => {
+      setSelectedRide(null);
+      setSelectedRequest(null);
+      setRideDetailClosing(false);
+    }, STACK_ANIM_MS);
+    return () => window.clearTimeout(id);
+  }, [rideDetailClosing]);
+
+  useEffect(() => {
+    if (!requestDetailClosing) return;
+    const id = window.setTimeout(() => {
+      setSelectedRequest(null);
+      setRequestDetailClosing(false);
+    }, STACK_ANIM_MS);
+    return () => window.clearTimeout(id);
+  }, [requestDetailClosing]);
+
+  useEffect(() => {
+    if (!planTripClosing) return;
+    const id = window.setTimeout(() => {
+      setPlanTripOpen(false);
+      setPlanTripClosing(false);
+    }, STACK_ANIM_MS);
+    return () => window.clearTimeout(id);
+  }, [planTripClosing]);
+
+  useEffect(() => {
+    if (!driverPublishModalClosing) return;
+    const id = window.setTimeout(() => {
+      setDriverPublishModalOpen(false);
+      setDriverPublishModalClosing(false);
+      setMapPicker(null);
+    }, DRIVER_PUBLISH_SHEET_MS);
+    return () => window.clearTimeout(id);
+  }, [driverPublishModalClosing]);
+
+  useEffect(() => {
+    if (!scheduleModalClosing) return;
+    const id = window.setTimeout(() => {
+      setScheduleModalOpen(false);
+      setScheduleModalClosing(false);
+    }, MODAL_EXIT_MS);
+    return () => window.clearTimeout(id);
+  }, [scheduleModalClosing]);
+
+  const closeLanguageFullscreen = useCallback(() => {
+    if (langPanelClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setProfileSettingsView("main");
+      return;
+    }
+    setLangPanelClosing(true);
+  }, [langPanelClosing]);
+
+  const beginCloseRideDetail = useCallback(() => {
+    if (rideDetailClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setSelectedRide(null);
+      setSelectedRequest(null);
+      return;
+    }
+    setRideDetailClosing(true);
+  }, [rideDetailClosing]);
+
+  const beginCloseRequestDetail = useCallback(() => {
+    if (requestDetailClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setSelectedRequest(null);
+      return;
+    }
+    setRequestDetailClosing(true);
+  }, [requestDetailClosing]);
+
+  const beginClosePlanTrip = useCallback(() => {
+    if (planTripClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setPlanTripOpen(false);
+      return;
+    }
+    setPlanTripClosing(true);
+  }, [planTripClosing]);
+
+  const beginCloseDriverPublishModal = useCallback(() => {
+    if (driverPublishModalClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setDriverPublishModalOpen(false);
+      setMapPicker(null);
+      return;
+    }
+    setDriverPublishModalClosing(true);
+  }, [driverPublishModalClosing]);
+
+  const beginCloseScheduleModal = useCallback(() => {
+    if (scheduleModalClosing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+      setScheduleModalOpen(false);
+      return;
+    }
+    setScheduleModalClosing(true);
+  }, [scheduleModalClosing]);
+
+  useEffect(() => {
+    if (role === "driver" && tab === "post") setTab("find");
   }, [role, tab]);
 
   useEffect(() => {
@@ -1802,10 +2305,10 @@ export default function CollegeRide() {
 
   /** 出发时间按钮展示（24 小时制）；含可选返程 */
   const planTripTimeChipLabel = useMemo(() => {
-    if (pickupTimeMode === "immediate") return "立即接载";
+    if (pickupTimeMode === "immediate") return t("plan_pickup_now");
     let s = formatScheduleChipLabel(scheduledPickupDate, scheduledHour, scheduledMinute);
     if (planTripReturnEnabled) {
-      s += ` · 返程 ${formatScheduleChipLabel(returnScheduledDate, returnHour, returnMinute)}`;
+      s += ` · ${t("label_return_short")} ${formatScheduleChipLabel(returnScheduledDate, returnHour, returnMinute)}`;
     }
     return s;
   }, [
@@ -1817,6 +2320,7 @@ export default function CollegeRide() {
     returnScheduledDate,
     returnHour,
     returnMinute,
+    lang,
   ]);
 
   const snapOriginToCurrentLocation = useCallback(() => {
@@ -2449,9 +2953,9 @@ export default function CollegeRide() {
           >
             <span style={{ display: "flex" }}>{Icons.car}</span>
           </div>
-          <h2 style={{ color: colors.white, fontSize: 24, fontWeight: 700, marginBottom: 10, letterSpacing: "-0.02em" }}>预约已确认</h2>
+          <h2 style={{ color: colors.white, fontSize: 24, fontWeight: 700, marginBottom: 10, letterSpacing: "-0.02em" }}>{t("booking_confirmed_title")}</h2>
           <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, lineHeight: 1.65, marginBottom: 28, maxWidth: 300 }}>
-            {selectedRide.driver} 将于 <strong style={{ color: colors.white }}>{selectedRide.time}</strong> 接你
+            {t("booking_confirmed_desc", { driver: selectedRide.driver })} <strong style={{ color: colors.white }}>{selectedRide.time}</strong> {t("booking_confirmed_pickup")}
             <br />
             <span style={{ color: "rgba(255,255,255,0.9)" }}>
               {selectedRide.from} — {selectedRide.to}
@@ -2467,9 +2971,9 @@ export default function CollegeRide() {
               border: "1px solid rgba(255,255,255,0.1)",
             }}
           >
-            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 500 }}>预计费用</div>
+            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{t("label_est_cost")}</div>
             <div style={{ color: colors.white, fontSize: 36, fontWeight: 700, letterSpacing: "-0.03em" }}>${selectedRide.price.toFixed(2)}</div>
-            <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, marginTop: 6 }}>相较网约车预估更低</div>
+            <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, marginTop: 6 }}>{t("label_vs_rideshare")}</div>
           </div>
           <button
             style={styles.btn}
@@ -2479,7 +2983,7 @@ export default function CollegeRide() {
               setTab("find");
             }}
           >
-            返回主页
+            {t("btn_back_home")}
           </button>
         </div>
       </div>
@@ -2488,16 +2992,28 @@ export default function CollegeRide() {
 
   if (selectedRide && !confirmed) {
     return (
-      <div style={styles.app}>
+      <div
+        className={rideDetailClosing ? "cr-stack-layer cr-stack-layer-exit" : "cr-stack-layer"}
+        style={{
+          ...styles.app,
+          position: "fixed",
+          left: 0,
+          right: 0,
+          top: 0,
+          bottom: 0,
+          margin: "0 auto",
+          zIndex: 12000,
+          overflowY: "auto",
+          WebkitOverflowScrolling: "touch",
+          background: colors.page,
+        }}
+      >
         <link href={FONT_LINK} rel="stylesheet" />
         <div style={{ ...styles.header, padding: "16px 16px 14px" }}>
           <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 12 }}>
             <button
               type="button"
-              onClick={() => {
-                setSelectedRide(null);
-                setSelectedRequest(null);
-              }}
+              onClick={beginCloseRideDetail}
               style={{
                 background: "rgba(255,255,255,0.1)",
                 border: "1px solid rgba(255,255,255,0.15)",
@@ -2514,7 +3030,7 @@ export default function CollegeRide() {
             >
               {Icons.chevronLeft}
             </button>
-            <span style={{ fontWeight: 600, fontSize: 17 }}>行程详情</span>
+            <span style={{ fontWeight: 600, fontSize: 17 }}>{t("label_trip_details")}</span>
           </div>
         </div>
         <div style={styles.content}>
@@ -2527,7 +3043,7 @@ export default function CollegeRide() {
                   {selectedRide.school} · <StarRating rating={selectedRide.rating} accent={themePrimary} />
                 </div>
               </div>
-              <Tag text="已验证" accent={themePrimary} />
+              <Tag text={t("tag_verified")} accent={themePrimary} />
             </div>
             <div style={{ height: 1, background: colors.border, margin: "0 0 18px" }} />
             <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
@@ -2538,11 +3054,11 @@ export default function CollegeRide() {
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>出发地</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("label_origin_detail")}</div>
                   <div style={{ fontWeight: 600, fontSize: 15, marginTop: 4 }}>{selectedRide.from}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>目的地</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("label_dest_detail")}</div>
                   <div style={{ fontWeight: 600, fontSize: 15, marginTop: 4 }}>{selectedRide.to}</div>
                 </div>
               </div>
@@ -2550,7 +3066,7 @@ export default function CollegeRide() {
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>路线地图</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{t("label_route_map")}</div>
             <TripRouteMap
               fromLat={selectedRide.fromLat}
               fromLng={selectedRide.fromLng}
@@ -2558,15 +3074,16 @@ export default function CollegeRide() {
               toLng={selectedRide.toLng}
               lineColor={themePrimary}
               userLocation={currentLocationCoords}
+              loadingText={t("label_loading_route")}
             />
-            <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
+            <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>{t("map_disclaimer")}</div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
             {[
-              { label: "出发时间", value: selectedRide.time, icon: Icons.clock },
-              { label: "剩余座位", value: `${selectedRide.seats} 个`, icon: Icons.users },
-              { label: "绕路时间", value: selectedRide.detour, icon: Icons.mapPath },
+              { label: t("label_depart_time"), value: selectedRide.time, icon: Icons.clock },
+              { label: t("label_seats_left"), value: `${selectedRide.seats}`, icon: Icons.users },
+              { label: t("label_detour_time"), value: selectedRide.detour, icon: Icons.mapPath },
             ].map((item) => (
               <div key={item.label} style={{ ...styles.card, textAlign: "center", marginBottom: 0, padding: "14px 8px" }}>
                 <div style={{ display: "flex", justifyContent: "center", color: colors.navy, marginBottom: 8 }}>{item.icon}</div>
@@ -2579,15 +3096,15 @@ export default function CollegeRide() {
           <div style={{ ...styles.card, background: colors.tint, border: `1px solid ${colors.border}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, fontWeight: 500 }}>应付金额</div>
+                <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, fontWeight: 500 }}>{t("label_amount_due")}</div>
                 <div style={{ fontSize: 30, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>${selectedRide.price.toFixed(2)}</div>
-                <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>含平台服务费 10%</div>
+                <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>{t("label_platform_fee")}</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>参考价（网约车）</div>
+                <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>{t("tag_ref_price")}</div>
                 <div style={{ fontSize: 16, fontWeight: 600, color: colors.muted, textDecoration: "line-through" }}>$8.50</div>
                 <div style={{ marginTop: 8 }}>
-                  <Tag text="省 47%" accent={themePrimary} />
+                  <Tag text={t("tag_save_pct", { pct: "47" })} accent={themePrimary} />
                 </div>
               </div>
             </div>
@@ -2598,10 +3115,7 @@ export default function CollegeRide() {
           </button>
           <button
             style={{ ...styles.btnOutline, marginTop: 12 }}
-            onClick={() => {
-              setSelectedRide(null);
-              setSelectedRequest(null);
-            }}
+            onClick={beginCloseRideDetail}
           >
             取消
           </button>
@@ -2725,6 +3239,20 @@ export default function CollegeRide() {
           from { transform: translateX(-100%); opacity: 0.92; }
           to { transform: translateX(0); opacity: 1; }
         }
+        @keyframes crProfileLangSlideIn {
+          from { transform: translateX(100%); }
+          to { transform: translateX(0); }
+        }
+        @keyframes crProfileLangSlideOut {
+          from { transform: translateX(0); }
+          to { transform: translateX(100%); }
+        }
+        .cr-profile-lang-fullscreen {
+          animation: crProfileLangSlideIn ${PROFILE_LANG_ANIM_MS}ms ease-out both;
+        }
+        .cr-profile-lang-exit {
+          animation: crProfileLangSlideOut ${PROFILE_LANG_ANIM_MS}ms ease-out forwards;
+        }
         .cr-ride-card { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
         .cr-ride-card:hover { box-shadow: 0 8px 24px rgba(${themePrimaryRgb}, 0.1); border-color: #c5d0e0; }
         .cr-input-wrap:focus-within { border-color: ${themePrimary}; box-shadow: 0 0 0 3px rgba(${themePrimaryRgb}, 0.15); }
@@ -2760,6 +3288,8 @@ export default function CollegeRide() {
         @media (prefers-reduced-motion: reduce) {
           .cr-pickup-popover-enter { animation: none; opacity: 1; transform: none; }
           .cr-pickup-popover-exit { animation: none; opacity: 0; transform: none; }
+          .cr-profile-lang-fullscreen { animation: none; }
+          .cr-profile-lang-exit { animation: none; }
         }
       `}</style>
 
@@ -2773,7 +3303,7 @@ export default function CollegeRide() {
               </span>
             </div>
             <p style={{ margin: "10px 0 0", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, maxWidth: 280, fontWeight: 400 }}>
-              更便宜，更安全，和同校同学一起上学。
+              {t("tagline")}
             </p>
           </div>
           <div
@@ -2832,7 +3362,7 @@ export default function CollegeRide() {
                 transition: "font-size 0.22s ease, font-weight 0.22s ease, color 0.22s ease",
               }}
             >
-              乘客
+              {t("role_rider")}
             </button>
             <button
               type="button"
@@ -2858,7 +3388,7 @@ export default function CollegeRide() {
                 transition: "font-size 0.22s ease, font-weight 0.22s ease, color 0.22s ease",
               }}
             >
-              司机
+              {t("role_driver")}
             </button>
           </div>
         </div>
@@ -2883,8 +3413,8 @@ export default function CollegeRide() {
         {tab === "find" && role === "rider" && (
           <>
             <div style={{ ...styles.card, marginTop: 2, padding: "20px" }}>
-              <div style={styles.label}>路线</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 14, letterSpacing: "-0.02em" }}>搜索行程</div>
+              <div style={styles.label}>{t("label_route")}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 14, letterSpacing: "-0.02em" }}>{t("label_search_trips")}</div>
               <div
                 style={{
                   border: `1px solid ${colors.border}`,
@@ -2974,13 +3504,13 @@ export default function CollegeRide() {
                       fontFamily: "'Inter', system-ui, sans-serif",
                     }}
                   >
-                    {riderTo || "您想去哪里？"}
+                    {riderTo || t("ph_where_to")}
                   </button>
                 </div>
               </div>
               {routePreviewReady && effectiveFromLatLng && riderToCoords && (
                 <div style={{ marginTop: 16 }}>
-                  <div style={{ ...styles.label, marginTop: 0 }}>路线预览</div>
+                  <div style={{ ...styles.label, marginTop: 0 }}>{t("label_route_preview")}</div>
                   <TripRouteMap
                     fromLat={effectiveFromLatLng.lat}
                     fromLng={effectiveFromLatLng.lng}
@@ -2988,15 +3518,16 @@ export default function CollegeRide() {
                     toLng={riderToCoords.lng}
                     lineColor={themePrimary}
                     userLocation={currentLocationCoords}
+                    loadingText={t("label_loading_route")}
                   />
                 </div>
               )}
             </div>
 
-            <div style={styles.sectionTitle}>附近行程</div>
-            <div style={styles.sectionHeadline}>共 {matchedRides.length} 条匹配</div>
+            <div style={styles.sectionTitle}>{t("section_nearby")}</div>
+            <div style={styles.sectionHeadline}>{t("headline_matches", { count: matchedRides.length })}</div>
             <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
-              根据你在「{activeCampus.short}」的位置，优先展示附近可搭乘的行程
+              {t("desc_nearby", { campus: activeCampus.short })}
             </p>
             {matchedRides.map((ride) => (
               <div
@@ -3020,7 +3551,7 @@ export default function CollegeRide() {
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 22, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>${ride.price.toFixed(2)}</div>
-                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>/ 人</div>
+                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>{t("label_per_person")}</div>
                   </div>
                 </div>
 
@@ -3042,11 +3573,11 @@ export default function CollegeRide() {
                   </div>
                   <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" }}>
                     <div>
-                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>出发 </span>
+                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_from")} </span>
                       <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.from}</span>
                     </div>
                     <div>
-                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>到达 </span>
+                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_to")} </span>
                       <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.to}</span>
                     </div>
                   </div>
@@ -3054,8 +3585,8 @@ export default function CollegeRide() {
 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   <Tag text={ride.time} accent={themePrimary} />
-                  <Tag text={`${ride.seats} 席`} accent={themePrimary} />
-                  <Tag text={`绕路 ${ride.detour}`} accent={themePrimary} />
+                  <Tag text={t("label_seats_n", { n: ride.seats })} accent={themePrimary} />
+                  <Tag text={t("label_detour", { d: ride.detour })} accent={themePrimary} />
                 </div>
               </div>
             ))}
@@ -3064,17 +3595,231 @@ export default function CollegeRide() {
 
         {tab === "find" && role === "driver" && (
           <>
-            <div style={styles.sectionTitle}>司机</div>
-            <div style={styles.sectionHeadline}>顺路请求</div>
-            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
-              根据你在「{activeCampus.short}」的位置，优先展示附近乘客请求
-            </p>
-            <div style={{ ...styles.card, background: colors.white, border: `1px solid ${colors.border}`, marginBottom: 16 }}>
-              <div style={{ fontSize: 13, color: colors.text, fontWeight: 600, marginBottom: 6 }}>匹配说明</div>
-              <div style={{ fontSize: 13, color: colors.muted, lineHeight: 1.55, fontWeight: 400 }}>
-                系统根据绕路距离推荐顺路乘客；接单后按实际绕路计费。
+            <button
+              type="button"
+              onClick={() => setDriverPublishModalOpen(true)}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 10,
+                padding: "14px 18px",
+                borderRadius: 12,
+                border: `1px solid ${DRIVER_PRIMARY}`,
+                background: DRIVER_PRIMARY,
+                color: "#ffffff",
+                fontSize: 16,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "'Inter', system-ui, sans-serif",
+                marginBottom: 16,
+                boxSizing: "border-box",
+              }}
+            >
+              <span style={{ display: "flex", width: 22, height: 22, alignItems: "center", justifyContent: "center" }}>{Icons.plus}</span>
+              <span>{t("headline_driver_publish")}</span>
+            </button>
+
+            {driverPublishModalOpen && (
+              <div
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 10052,
+                  margin: "0 auto",
+                  maxWidth: 430,
+                  width: "100%",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                  pointerEvents: "auto",
+                }}
+              >
+                <button
+                  type="button"
+                  aria-label={t("btn_cancel")}
+                  onClick={beginCloseDriverPublishModal}
+                  className={
+                    driverPublishModalClosing
+                      ? "cr-driver-publish-backdrop cr-driver-publish-backdrop-exit"
+                      : "cr-driver-publish-backdrop"
+                  }
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    border: "none",
+                    background: "rgba(0,0,0,0.5)",
+                    cursor: "pointer",
+                  }}
+                />
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="cr-driver-publish-title"
+                  onClick={(e) => e.stopPropagation()}
+                  className={
+                    driverPublishModalClosing
+                      ? "cr-driver-publish-sheet cr-driver-publish-sheet-exit"
+                      : "cr-driver-publish-sheet"
+                  }
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    top: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    background: colors.card,
+                    color: colors.text,
+                    zIndex: 1,
+                    boxShadow: "0 -8px 40px rgba(0,0,0,0.12)",
+                    paddingTop: "max(12px, env(safe-area-inset-top))",
+                    paddingBottom: "max(16px, env(safe-area-inset-bottom))",
+                    paddingLeft: 18,
+                    paddingRight: 18,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflowY: "auto",
+                      WebkitOverflowScrolling: "touch",
+                    }}
+                  >
+                  <div id="cr-driver-publish-title" style={{ fontWeight: 800, fontSize: 18, marginBottom: 14, color: colors.text }}>
+                    {t("headline_driver_publish")}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{t("label_origin")}</div>
+                  <input
+                    value={publishFrom}
+                    onChange={(e) => setPublishFrom(e.target.value)}
+                    style={{ ...styles.input, paddingLeft: 12 }}
+                    placeholder={t("label_origin")}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMapPicker((p) => (p === "publish-from" ? null : "publish-from"))}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      marginBottom: 12,
+                      marginTop: 4,
+                      padding: "4px 0",
+                      border: "none",
+                      background: "none",
+                      color: colors.navy,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                    }}
+                  >
+                    <span style={{ display: "flex" }}>{Icons.mapPath}</span>
+                    {t("label_map_pick")}
+                  </button>
+                  {mapPicker === "publish-from" && (
+                    <MapPickerPanel
+                      lineColor={colors.navy}
+                      center={mapPickerCenter}
+                      userLocation={currentLocationCoords}
+                      onPick={(name) => {
+                        setPublishFrom(name);
+                        setMapPicker(null);
+                      }}
+                      onClose={() => setMapPicker(null)}
+                    />
+                  )}
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{t("label_destination")}</div>
+                  <input
+                    value={publishTo}
+                    onChange={(e) => setPublishTo(e.target.value)}
+                    style={{ ...styles.input, paddingLeft: 12 }}
+                    placeholder={t("label_destination")}
+                  />
+
+                  <div style={styles.label}>{t("label_depart_time")}</div>
+                  <input
+                    value={publishDepartTime}
+                    onChange={(e) => setPublishDepartTime(e.target.value)}
+                    style={{ ...styles.input, paddingLeft: 12 }}
+                    placeholder={lang === "en" ? "e.g. 8:30 AM" : "如：8:30"}
+                  />
+
+                  <div style={styles.label}>{t("label_seats_available")}</div>
+                  <select
+                    id="cr-post-seats"
+                    aria-label={t("label_seats_available")}
+                    value={postSeats}
+                    onChange={(e) => setPostSeats(Number(e.target.value))}
+                    style={{
+                      width: "100%",
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      border: `1px solid ${colors.border}`,
+                      fontSize: 14,
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                      fontWeight: 500,
+                      backgroundColor: colors.white,
+                      color: colors.text,
+                      cursor: "pointer",
+                      boxSizing: "border-box",
+                      outline: "none",
+                      marginBottom: 14,
+                    }}
+                  >
+                    {[1, 2, 3, 4, 5, 6].map((n) => (
+                      <option key={n} value={n}>
+                        {t("label_seats_n", { n })}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div style={{ ...styles.card, background: colors.tint, border: `1px solid ${colors.border}`, padding: "14px 16px", marginBottom: 14 }}>
+                    <div style={{ fontSize: 14, color: colors.navy, fontWeight: 600 }}>{t("driver_price_card_title")}</div>
+                    <div style={{ fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 1.5 }}>{t("platform_fee_driver_blurb")}</div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, marginTop: 4, paddingBottom: 4 }}>
+                    <button
+                      type="button"
+                      onClick={beginCloseDriverPublishModal}
+                      style={{
+                        flex: 1,
+                        padding: "12px 14px",
+                        borderRadius: 10,
+                        border: `1px solid ${colors.border}`,
+                        background: colors.white,
+                        color: colors.text,
+                        fontWeight: 600,
+                        fontSize: 14,
+                        cursor: "pointer",
+                        fontFamily: "'Inter', system-ui, sans-serif",
+                      }}
+                    >
+                      {t("btn_cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...styles.btn, flex: 1, marginBottom: 0 }}
+                      onClick={() => {
+                        setDriverPublishToast(t("publish_toast"));
+                        window.setTimeout(() => setDriverPublishToast(""), 2800);
+                        beginCloseDriverPublishModal();
+                      }}
+                    >
+                      {t("btn_publish_trip")}
+                    </button>
+                  </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
+
+            <div style={{ ...styles.sectionTitle, marginTop: 4 }}>{t("section_find_passengers")}</div>
+            <div style={styles.sectionHeadline}>{t("headline_driver_browse_passengers")}</div>
             {matchedRequests.map((req) => (
               <div
                 key={req.id}
@@ -3097,7 +3842,7 @@ export default function CollegeRide() {
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 20, fontWeight: 700, color: colors.navy }}>{req.earn}</div>
-                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>预计收益</div>
+                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>{t("label_est_earnings")}</div>
                   </div>
                 </div>
                 <div style={{ padding: "12px 14px", background: colors.page, borderRadius: 10, marginBottom: 12, border: `1px solid ${colors.border}` }}>
@@ -3109,8 +3854,8 @@ export default function CollegeRide() {
                 </div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
                   <Tag text={req.time} accent={themePrimary} />
-                  <Tag text={`绕路 ${req.detour}`} accent={themePrimary} />
-                  {typeof req._km === "number" && <Tag text={`距你约 ${req._km.toFixed(1)} km`} accent={themePrimary} />}
+                  <Tag text={t("label_detour", { d: req.detour })} accent={themePrimary} />
+                  {typeof req._km === "number" && <Tag text={t("label_dist_from_you", { km: req._km.toFixed(1) })} accent={themePrimary} />}
                 </div>
                 <button
                   type="button"
@@ -3121,118 +3866,19 @@ export default function CollegeRide() {
                     setSelectedRequest(req);
                   }}
                 >
-                  查看详情
+                  {t("btn_view_details")}
                 </button>
               </div>
             ))}
           </>
         )}
 
-        {tab === "post" && role === "driver" && (
+        {tab === "saved" && (
           <>
-            <div style={styles.sectionTitle}>发布</div>
-            <div style={styles.sectionHeadline}>发布空座</div>
-            <div style={styles.card}>
-              <div style={styles.label}>路线</div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>出发地</div>
-              <input
-                value={publishFrom}
-                onChange={(e) => setPublishFrom(e.target.value)}
-                style={{ ...styles.input, paddingLeft: 12 }}
-                placeholder="出发地"
-              />
-              <button
-                type="button"
-                onClick={() => setMapPicker((p) => (p === "publish-from" ? null : "publish-from"))}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  marginBottom: 12,
-                  marginTop: 4,
-                  padding: "4px 0",
-                  border: "none",
-                  background: "none",
-                  color: colors.navy,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                }}
-              >
-                <span style={{ display: "flex" }}>{Icons.mapPath}</span>
-                从地图选择
-              </button>
-              {mapPicker === "publish-from" && (
-                <MapPickerPanel
-                  lineColor={colors.navy}
-                  center={mapPickerCenter}
-                  userLocation={currentLocationCoords}
-                  onPick={(name) => {
-                    setPublishFrom(name);
-                    setMapPicker(null);
-                  }}
-                  onClose={() => setMapPicker(null)}
-                />
-              )}
-              <input
-                value={publishTo}
-                onChange={(e) => setPublishTo(e.target.value)}
-                style={{ ...styles.input, paddingLeft: 12 }}
-                placeholder="目的地"
-              />
-
-              <div style={styles.label}>出发时间</div>
-              <input style={{ ...styles.input, paddingLeft: 12 }} placeholder="如：8:30 AM" />
-
-              <div style={styles.label}>空余座位</div>
-              <select
-                id="cr-post-seats"
-                aria-label="空余座位数量"
-                value={postSeats}
-                onChange={(e) => setPostSeats(Number(e.target.value))}
-                style={{
-                  width: "100%",
-                  padding: "12px 14px",
-                  borderRadius: 10,
-                  border: `1px solid ${colors.border}`,
-                  fontSize: 14,
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                  fontWeight: 500,
-                  backgroundColor: colors.white,
-                  color: colors.text,
-                  cursor: "pointer",
-                  boxSizing: "border-box",
-                  outline: "none",
-                  marginBottom: 14,
-                }}
-              >
-                {[1, 2, 3, 4, 5, 6].map((n) => (
-                  <option key={n} value={n}>
-                    {n} 个空座
-                  </option>
-                ))}
-              </select>
-
-              <div style={styles.label}>计价</div>
-              <div style={{ ...styles.card, background: colors.tint, border: `1px solid ${colors.border}`, padding: "14px 16px", marginBottom: 14 }}>
-                <div style={{ fontSize: 14, color: colors.navy, fontWeight: 600 }}>平台自动计价</div>
-                <div style={{ fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 1.5 }}>按绕路距离比例计费；平台收取 10% 服务费。</div>
-              </div>
-
-              <button type="button" style={styles.btn}>
-                发布行程
-              </button>
-            </div>
-          </>
-        )}
-
-        {tab === "saved" && role === "rider" && (
-          <>
-            <div style={styles.sectionTitle}>常用路线</div>
-            <div style={styles.sectionHeadline}>已保存的路线</div>
+            <div style={styles.sectionTitle}>{t("section_saved")}</div>
+            <div style={styles.sectionHeadline}>{t("headline_saved")}</div>
             <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.55 }}>
-              点击下方创建：填写名称、出发点与返回点；出发时间可选。保存后可在「找拼车」一键使用。
+              {role === "driver" ? t("desc_saved_driver") : t("desc_saved_rider")}
             </p>
 
             <div style={{ ...styles.card, marginBottom: 14 }}>
@@ -3254,7 +3900,7 @@ export default function CollegeRide() {
                     type="text"
                     value={commonRouteSaveName}
                     onChange={(e) => setCommonRouteSaveName(e.target.value)}
-                    placeholder="例如：平日上学、周末回家"
+                    placeholder={t("ph_route_name")}
                     style={{ ...styles.input, marginBottom: 12 }}
                   />
                   <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer", fontSize: 14, color: colors.text }}>
@@ -3276,17 +3922,17 @@ export default function CollegeRide() {
                         ["--cr-checkbox-dot"]: colors.white,
                       }}
                     />
-                    出发地使用当前位置
+                    {t("cb_use_current_loc")}
                   </label>
                   {!crFromUseCL && (
                     <div style={{ marginBottom: 12 }}>
-                      <div style={{ ...styles.label, marginBottom: 6 }}>出发点</div>
+                      <div style={{ ...styles.label, marginBottom: 6 }}>{t("label_origin_point")}</div>
                       <PlaceSuggestField
                         inputId="cr-create-from"
                         value={crFrom}
                         onChange={setCrFrom}
                         onCoordsChange={setCrFromCoords}
-                        placeholder="英文/中文地址或地点名"
+                        placeholder={t("ph_address")}
                         variant="light"
                         borderColor={colors.border}
                         hoverRgb={themePrimaryRgb}
@@ -3314,13 +3960,13 @@ export default function CollegeRide() {
                     </div>
                   )}
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ ...styles.label, marginBottom: 6 }}>返回点</div>
+                    <div style={{ ...styles.label, marginBottom: 6 }}>{t("label_return_point")}</div>
                     <PlaceSuggestField
                       inputId="cr-create-to"
                       value={crTo}
                       onChange={setCrTo}
                       onCoordsChange={setCrToCoords}
-                      placeholder="楼、店铺、公寓或地址"
+                      placeholder={t("ph_destination")}
                       variant="light"
                       borderColor={colors.border}
                       hoverRgb={themePrimaryRgb}
@@ -3359,11 +4005,11 @@ export default function CollegeRide() {
                         ["--cr-checkbox-dot"]: colors.white,
                       }}
                     />
-                    设置出发时间（可选）
+                    {t("cb_set_time")}
                   </label>
                   {crTimeEnabled && (
                     <div style={{ marginBottom: 12 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, marginBottom: 8 }}>出发时间 · 24 小时制</div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, marginBottom: 8 }}>{t("label_depart_time_24h")}</div>
                       <TimeHourMinuteBlock
                         hideLabel
                         variant="light"
@@ -3383,7 +4029,7 @@ export default function CollegeRide() {
                       }}
                       style={{ ...styles.btnOutline, flex: 1 }}
                     >
-                      取消
+                      {t("btn_cancel")}
                     </button>
                     <button
                       type="button"
@@ -3400,7 +4046,7 @@ export default function CollegeRide() {
                           commonRouteSaving || !crTo.trim() || !(crFromUseCL || crFrom.trim()) ? 0.45 : 1,
                       }}
                     >
-                      {commonRouteSaving ? "保存中…" : "保存"}
+                      {commonRouteSaving ? t("btn_saving") : t("btn_save")}
                     </button>
                   </div>
                 </div>
@@ -3410,19 +4056,19 @@ export default function CollegeRide() {
             {commonRoutes.length === 0 ? (
               <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 20 }}>
                 <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>
-                  暂无常用路线。点击上方「创建常用路线」添加。
+                  {t("empty_saved")}
                 </div>
               </div>
             ) : (
               commonRoutes.map((trip) => {
                 const shortFrom = trip.fromUseCurrentLocation
-                  ? "当前位置"
-                  : shortSchedulePlaceName(trip.fromLabel, { fallback: "出发地" });
-                const shortTo = shortSchedulePlaceName(trip.toLabel, { fallback: "返回点" });
+                  ? t("label_current_location")
+                  : shortSchedulePlaceName(trip.fromLabel, { fallback: t("label_origin_fallback") });
+                const shortTo = shortSchedulePlaceName(trip.toLabel, { fallback: t("label_return_fallback") });
                 const tf = getCommonRouteTimeFields(trip);
                 const summary =
                   `${shortFrom} → ${shortTo}` +
-                  (tf.timeEnabled ? ` · 出发 ${formatScheduleMinutes(tf.outHour * 60 + tf.outMinute)}` : "");
+                  (tf.timeEnabled ? ` · ${t("label_depart_short")} ${formatScheduleMinutes(tf.outHour * 60 + tf.outMinute)}` : "");
                 return (
                   <div key={trip.id} style={{ ...styles.card, padding: "8px 12px", marginBottom: 8 }}>
                     <div
@@ -3485,7 +4131,7 @@ export default function CollegeRide() {
                             whiteSpace: "nowrap",
                           }}
                         >
-                          删除
+                          {t("btn_delete")}
                         </button>
                       </div>
                     </div>
@@ -3507,58 +4153,83 @@ export default function CollegeRide() {
               })
             )}
 
-            <div style={{ ...styles.sectionTitle, marginTop: 8 }}>常用时间表</div>
-            <div style={styles.sectionHeadline}>一周安排</div>
-            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 12, lineHeight: 1.55 }}>
-              左侧加号添加常用行程。纵轴为时间（默认 6:00 起，若有更早行程会自动向上扩展）；横轴为周一到周日。
+            <div style={{ ...styles.sectionTitle, marginTop: 8 }}>{t("section_weekly")}</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                marginBottom: 6,
+                flexWrap: "nowrap",
+              }}
+            >
+              <div style={{ ...styles.sectionHeadline, margin: 0, flex: "1 1 auto", minWidth: 0 }}>{t("headline_weekly")}</div>
+              <button
+                type="button"
+                onClick={openScheduleModal}
+                aria-label={t("btn_add_schedule")}
+                title={t("btn_add_schedule")}
+                style={{
+                  flexShrink: 0,
+                  width: 40,
+                  height: 40,
+                  borderRadius: 12,
+                  border: `1.5px solid ${colors.navy}`,
+                  background: colors.white,
+                  color: colors.navy,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  padding: 0,
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+                }}
+              >
+                <span style={{ display: "flex" }}>{Icons.plus}</span>
+              </button>
+            </div>
+            <p style={{ fontSize: 13, color: colors.muted, marginTop: 0, marginBottom: 12, lineHeight: 1.55 }}>
+              {t("desc_weekly")}
             </p>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
-              <div style={{ width: 40, flexShrink: 0, paddingTop: 4 }}>
-                <button
-                  type="button"
-                  onClick={openScheduleModal}
-                  aria-label="添加常用行程"
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: "50%",
-                    border: `1.5px solid ${colors.navy}`,
-                    background: colors.white,
-                    color: colors.navy,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                    padding: 0,
-                  }}
-                >
-                  <span style={{ display: "flex" }}>{Icons.plus}</span>
-                </button>
-              </div>
-              <div style={{ flex: 1, minWidth: 0, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                <div style={{ minWidth: 600, border: `1px solid ${colors.border}`, borderRadius: 10, overflow: "hidden", background: colors.page }}>
+            <div style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}>
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: "100%",
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  background: colors.page,
+                  boxSizing: "border-box",
+                }}
+              >
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "44px repeat(7, minmax(72px, 1fr))",
+                      gridTemplateColumns: "minmax(26px, 32px) repeat(7, minmax(0, 1fr))",
                       gap: 0,
                       background: colors.card,
                       borderBottom: `1px solid ${colors.border}`,
+                      width: "100%",
                     }}
                   >
-                    <div style={{ minHeight: 28 }} aria-hidden />
-                    {WEEKDAY_LABELS.map((label) => (
+                    <div style={{ minHeight: 24 }} aria-hidden />
+                    {tWeekdays().map((label) => (
                       <div
                         key={label}
                         style={{
                           textAlign: "center",
-                          fontSize: 11,
+                          fontSize: 10,
                           fontWeight: 700,
                           color: colors.muted,
-                          padding: "8px 4px",
-                          letterSpacing: "0.02em",
+                          padding: "6px 1px",
+                          letterSpacing: 0,
                           borderLeft: `1px solid ${colors.border}`,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
                         }}
                       >
                         {label}
@@ -3570,21 +4241,23 @@ export default function CollegeRide() {
                       key={slotStart}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "44px repeat(7, minmax(72px, 1fr))",
+                        gridTemplateColumns: "minmax(26px, 32px) repeat(7, minmax(0, 1fr))",
                         gap: 0,
                         borderTop: slotStart > scheduleWeekGridBounds.rowStartMin ? `1px solid ${colors.border}` : undefined,
-                        minHeight: 56,
+                        minHeight: 48,
+                        width: "100%",
                       }}
                     >
                       <div
                         style={{
-                          fontSize: 10,
+                          fontSize: 9,
                           fontWeight: 700,
                           color: colors.muted,
-                          padding: "8px 6px 0 0",
+                          padding: "6px 2px 0 0",
                           textAlign: "right",
                           background: colors.page,
                           boxSizing: "border-box",
+                          lineHeight: 1.2,
                         }}
                       >
                         {formatScheduleMinutes(slotStart)}
@@ -3600,21 +4273,22 @@ export default function CollegeRide() {
                             key={`${slotStart}-${wd}`}
                             style={{
                               borderLeft: `1px solid ${colors.border}`,
-                              padding: 4,
+                              padding: 2,
                               background: colors.white,
-                              minHeight: 52,
+                              minHeight: 44,
+                              minWidth: 0,
                               display: "flex",
                               flexDirection: "column",
-                              gap: 4,
+                              gap: 3,
                               alignItems: "stretch",
                               boxSizing: "border-box",
                             }}
                           >
                             {cellItems.map((entry) => {
                               const shortFrom = entry.fromUseCurrentLocation
-                                ? "当前位置"
-                                : shortSchedulePlaceName(entry.fromLabel, { fallback: "出发地" });
-                              const shortTo = shortSchedulePlaceName(entry.toLabel, { fallback: "目的地" });
+                                ? t("label_current_location")
+                                : shortSchedulePlaceName(entry.fromLabel, { fallback: t("label_origin_fallback") });
+                              const shortTo = shortSchedulePlaceName(entry.toLabel, { fallback: t("label_dest_fallback") });
                               const routeShort = `${shortFrom} → ${shortTo}`;
                               const showDep = scheduleEntryInHourSlot(entry, slotStart);
                               const showRet = scheduleReturnInHourSlot(entry, slotStart);
@@ -3643,7 +4317,7 @@ export default function CollegeRide() {
                                   )}
                                   {showRet && (
                                     <div style={{ fontSize: 9, fontWeight: 600, color: colors.muted, marginBottom: 4 }}>
-                                      返程 {formatScheduleMinutes(entry.returnMinutes)}
+                                      {t("label_return_short")} {formatScheduleMinutes(entry.returnMinutes)}
                                     </div>
                                   )}
                                   <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
@@ -3664,7 +4338,7 @@ export default function CollegeRide() {
                                         fontFamily: "'Inter', system-ui, sans-serif",
                                       }}
                                     >
-                                      使用
+                                      {t("btn_use")}
                                     </button>
                                     <button
                                       type="button"
@@ -3701,7 +4375,7 @@ export default function CollegeRide() {
           </>
         )}
 
-        {scheduleModalOpen && role === "rider" && (
+        {scheduleModalOpen && (
           <div
             style={{
               position: "fixed",
@@ -3737,7 +4411,7 @@ export default function CollegeRide() {
                 maxWidth: 400,
                 maxHeight: "min(92vh, 880px)",
                 overflowY: "auto",
-                background: RIDER_PRIMARY,
+                background: themePrimary,
                 color: "#ffffff",
                 borderRadius: 16,
                 padding: "20px 18px 18px",
@@ -3747,15 +4421,15 @@ export default function CollegeRide() {
               }}
             >
               <div id="cr-schedule-modal-title" style={{ fontWeight: 800, fontSize: 18, marginBottom: 6, color: "#ffffff" }}>
-                添加常用行程
+                {t("modal_schedule_title")}
               </div>
               <p style={{ fontSize: 13, color: "rgba(255,255,255,0.82)", marginBottom: 16, lineHeight: 1.5 }}>
-                选择星期、<strong style={{ fontWeight: 700 }}>24 小时制</strong>出发时间与起终点；可勾选返程并选择返程时间。保存后会出现在一周安排表对应时间与星期格子中。
+                {t("modal_schedule_desc")}
               </p>
 
-              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>星期</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>{t("label_weekday")}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
-                {WEEKDAY_LABELS.map((label, i) => (
+                {tWeekdays().map((label, i) => (
                   <button
                     key={label}
                     type="button"
@@ -3765,7 +4439,7 @@ export default function CollegeRide() {
                       borderRadius: 8,
                       border: `1px solid ${scheduleModalWeekday === i ? "#ffffff" : "rgba(255,255,255,0.45)"}`,
                       background: scheduleModalWeekday === i ? "#ffffff" : "transparent",
-                      color: scheduleModalWeekday === i ? RIDER_PRIMARY : "rgba(255,255,255,0.95)",
+                      color: scheduleModalWeekday === i ? themePrimary : "rgba(255,255,255,0.95)",
                       fontWeight: scheduleModalWeekday === i ? 700 : 500,
                       fontSize: 12,
                       cursor: "pointer",
@@ -3777,7 +4451,7 @@ export default function CollegeRide() {
                 ))}
               </div>
 
-              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>出发时间 · 24 小时制</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>{t("label_depart_time_24h")}</div>
               <div style={{ marginBottom: 14 }}>
                 <TimeHourMinuteBlock
                   hideLabel
@@ -3816,21 +4490,21 @@ export default function CollegeRide() {
                     cursor: "pointer",
                     ["--cr-checkbox-border"]: "#ffffff",
                     ["--cr-checkbox-fill"]: "#ffffff",
-                    ["--cr-checkbox-dot"]: RIDER_PRIMARY,
+                    ["--cr-checkbox-dot"]: themePrimary,
                   }}
                 />
-                出发地使用当前位置
+                {t("cb_use_current_loc")}
               </label>
 
               {!scheduleModalFromUseCL && (
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>出发地</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>{t("label_origin_modal")}</div>
                   <PlaceSuggestField
                     inputId="cr-schedule-modal-from"
                     value={scheduleModalFrom}
                     onChange={setScheduleModalFrom}
                     onCoordsChange={setScheduleModalFromCoords}
-                    placeholder="英文/中文地址或地点名（楼、餐厅等）"
+                    placeholder={t("ph_address_place")}
                     variant="dark"
                     borderColor="rgba(255,255,255,0.25)"
                     hoverRgb="255, 255, 255"
@@ -3863,7 +4537,7 @@ export default function CollegeRide() {
               )}
 
               <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>目的地</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 6 }}>{t("label_destination_modal")}</div>
                 <PlaceSuggestField
                   inputId="cr-schedule-modal-to"
                   value={scheduleModalTo}
@@ -3921,10 +4595,10 @@ export default function CollegeRide() {
                     cursor: "pointer",
                     ["--cr-checkbox-border"]: "#ffffff",
                     ["--cr-checkbox-fill"]: "#ffffff",
-                    ["--cr-checkbox-dot"]: RIDER_PRIMARY,
+                    ["--cr-checkbox-dot"]: themePrimary,
                   }}
                 />
-                返程
+                {t("cb_return")}
               </label>
 
               <div
@@ -3939,7 +4613,7 @@ export default function CollegeRide() {
                 aria-hidden={!scheduleModalReturnEnabled}
               >
                 <div style={{ marginBottom: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>返程时间 · 24 小时制</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 8 }}>{t("label_return_time_24h")}</div>
                   <TimeHourMinuteBlock
                     hideLabel
                     variant="dark"
@@ -3968,7 +4642,7 @@ export default function CollegeRide() {
                     fontFamily: "'Inter', system-ui, sans-serif",
                   }}
                 >
-                  取消
+                  {t("btn_cancel")}
                 </button>
                 <button
                   type="button"
@@ -3984,7 +4658,7 @@ export default function CollegeRide() {
                     borderRadius: 10,
                     border: "none",
                     background: "#ffffff",
-                    color: RIDER_PRIMARY,
+                    color: themePrimary,
                     fontWeight: 700,
                     fontSize: 14,
                     cursor:
@@ -4002,7 +4676,7 @@ export default function CollegeRide() {
                         : 1,
                   }}
                 >
-                  {scheduleModalCommitting ? "保存中…" : "保存到时间表"}
+                  {scheduleModalCommitting ? t("btn_saving") : t("btn_save")}
                 </button>
               </div>
             </div>
@@ -4011,12 +4685,12 @@ export default function CollegeRide() {
 
         {tab === "history" && (
           <>
-            <div style={styles.sectionTitle}>记录</div>
-            <div style={styles.sectionHeadline}>行程与节省</div>
+            <div style={styles.sectionTitle}>{t("section_history")}</div>
+            <div style={styles.sectionHeadline}>{t("headline_history")}</div>
             {[
-              { date: "今天", from: "Foggy Bottom", to: "Capitol Hill", cost: "$4.50", type: "乘客", driver: "Alex K." },
-              { date: "昨天", from: "Georgetown", to: "Dupont Circle", cost: "$3.00", type: "乘客", driver: "Maya S." },
-              { date: "3月5日", from: "Tenleytown", to: "Downtown DC", cost: "+$6.20", type: "司机", driver: "你" },
+              { date: lang === "en" ? "Today" : "今天", from: "Foggy Bottom", to: "Capitol Hill", cost: "$4.50", type: t("tag_passenger"), driver: "Alex K." },
+              { date: lang === "en" ? "Yesterday" : "昨天", from: "Georgetown", to: "Dupont Circle", cost: "$3.00", type: t("tag_passenger"), driver: "Maya S." },
+              { date: lang === "en" ? "Mar 5" : "3月5日", from: "Tenleytown", to: "Downtown DC", cost: "+$6.20", type: t("tag_driver"), driver: lang === "en" ? "You" : "你" },
             ].map((item, i) => (
               <div key={i} style={styles.card}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -4027,8 +4701,8 @@ export default function CollegeRide() {
                   {item.from} — {item.to}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 13, color: colors.muted }}>{item.type === "乘客" ? `司机：${item.driver}` : "你开车"}</span>
-                  <span style={{ fontWeight: 700, fontSize: 16, color: item.type === "司机" ? colors.navy : colors.text }}>{item.cost}</span>
+                  <span style={{ fontSize: 13, color: colors.muted }}>{item.type === t("tag_passenger") ? t("label_driver_was", { name: item.driver }) : t("label_you_drove")}</span>
+                  <span style={{ fontWeight: 700, fontSize: 16, color: item.type === t("tag_driver") ? colors.navy : colors.text }}>{item.cost}</span>
                 </div>
               </div>
             ))}
@@ -4040,17 +4714,17 @@ export default function CollegeRide() {
                 border: "none",
               }}
             >
-              <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 600, letterSpacing: "0.06em" }}>本月合计节省</div>
+              <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 600, letterSpacing: "0.06em" }}>{t("history_monthly_label")}</div>
               <div style={{ color: colors.white, fontSize: 34, fontWeight: 700, letterSpacing: "-0.03em" }}>$24.50</div>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 6 }}>相较网约车约省 42%</div>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 6 }}>{t("history_monthly_vs")}</div>
             </div>
           </>
         )}
 
         {tab === "profile" && (
           <>
-            <div style={styles.sectionTitle}>账户</div>
-            <div style={styles.sectionHeadline}>个人资料</div>
+            <div style={styles.sectionTitle}>{t("section_account")}</div>
+            <div style={styles.sectionHeadline}>{t("headline_profile")}</div>
             <div style={{ ...styles.card, textAlign: "center", padding: "32px 20px 28px" }}>
               <div
                 style={{
@@ -4069,22 +4743,22 @@ export default function CollegeRide() {
                   boxShadow: `0 4px 16px rgba(${themePrimaryRgb}, 0.25)`,
                 }}
               >
-                T
+                {profileAvatarInitial}
               </div>
-              <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Timon L.</div>
-              <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>JHU · 2024级</div>
+              <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>{profileDisplayName}</div>
+              <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>{user?.email ?? ""}</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", alignItems: "center" }}>
-                <Tag text="已验证学生" accent={themePrimary} />
+                <Tag text={t("tag_verified_student")} accent={themePrimary} />
                 <StarRating rating={4.9} accent={themePrimary} />
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
               {[
-                { label: "总行程", value: "12 次" },
-                { label: "节省金额", value: "$67.20" },
-                { label: "司机收入", value: "$18.60" },
-                { label: "减碳量", value: "23 kg" },
+                { label: t("stat_total_trips"), value: lang === "en" ? "12 trips" : "12 次" },
+                { label: t("stat_savings"), value: "$67.20" },
+                { label: t("stat_driver_income"), value: "$18.60" },
+                { label: t("stat_carbon"), value: "23 kg" },
               ].map((item) => (
                 <div key={item.label} style={{ ...styles.card, textAlign: "center", padding: "16px 12px" }}>
                   <div style={{ fontSize: 20, fontWeight: 700, color: colors.text }}>{item.value}</div>
@@ -4094,24 +4768,199 @@ export default function CollegeRide() {
             </div>
 
             <div style={styles.card}>
-              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>学校</div>
-              <div style={{ fontSize: 14, color: colors.text, fontWeight: 600, marginBottom: 8 }}>{USER_SCHOOL}</div>
-              <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.55 }}>
-                学校由登录与身份验证确定，不可在此修改。教学楼 / 校区请在「规划行程」地图中通过出发地与目的地旁的教学楼下拉选择。
-              </div>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{t("label_school")}</div>
+              <div style={{ fontSize: 17, color: colors.text, fontWeight: 600, letterSpacing: "-0.02em" }}>{schoolDisplay}</div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => signOut()}
+              style={{
+                width: "100%",
+                padding: "14px 16px",
+                marginBottom: 12,
+                borderRadius: 12,
+                border: `1.5px solid ${colors.border}`,
+                background: colors.white,
+                color: "#b91c1c",
+                fontWeight: 700,
+                fontSize: 15,
+                cursor: "pointer",
+                fontFamily: "'Inter', system-ui, sans-serif",
+              }}
+            >
+              {t("btn_logout")}
+            </button>
+
+            <div style={styles.sectionTitle}>{t("section_settings")}</div>
+            <div style={{ ...styles.card, padding: 0, overflow: "hidden", marginBottom: 12 }}>
+              <button
+                type="button"
+                onClick={() => setProfileSettingsView("language")}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 14,
+                  padding: "16px 18px",
+                  border: "none",
+                  background: colors.card,
+                  cursor: "pointer",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                  textAlign: "left",
+                }}
+              >
+                <span style={{ display: "flex", color: colors.text, flexShrink: 0 }}>{Icons.globe}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15, color: colors.text }}>{t("label_language")}</div>
+                  <div style={{ fontSize: 13, color: colors.muted, marginTop: 3 }}>{lang === "zh" ? t("lang_zh") : t("lang_en")}</div>
+                </div>
+                <span style={{ display: "flex", color: colors.muted, flexShrink: 0, opacity: 0.85 }}>{Icons.chevronRight}</span>
+              </button>
             </div>
           </>
         )}
         </div>
       </div>
 
+      {tab === "profile" && profileSettingsView === "language" && (
+        <div
+          className={langPanelClosing ? "cr-profile-lang-fullscreen cr-profile-lang-exit" : "cr-profile-lang-fullscreen"}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("headline_language")}
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            margin: "0 auto",
+            maxWidth: 430,
+            width: "100%",
+            zIndex: 20000,
+            background: colors.page,
+            display: "flex",
+            flexDirection: "column",
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            style={{
+              flexShrink: 0,
+              paddingTop: "max(14px, env(safe-area-inset-top, 0px))",
+              paddingLeft: 16,
+              paddingRight: 16,
+              paddingBottom: 14,
+              borderBottom: `1px solid ${colors.border}`,
+              background: colors.page,
+            }}
+          >
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 44 }}>
+              <button
+                type="button"
+                onClick={closeLanguageFullscreen}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "none",
+                  border: "none",
+                  padding: "8px 4px 8px 0",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 2,
+                  color: colors.text,
+                  fontWeight: 600,
+                  fontSize: 15,
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                }}
+              >
+                <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
+                {t("btn_back")}
+              </button>
+              <div style={{ fontWeight: 700, fontSize: 17, color: colors.text }}>{t("headline_language")}</div>
+            </div>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", minHeight: 0, WebkitOverflowScrolling: "touch", padding: "16px" }}>
+            <div style={{ ...styles.card, padding: 0, overflow: "hidden" }}>
+              {["zh", "en"].map((code, idx) => (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={() => {
+                    setLang(code);
+                    localStorage.setItem("cr-lang", code);
+                  }}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 14,
+                    padding: "16px 18px",
+                    border: "none",
+                    borderBottom: idx === 0 ? `1px solid ${colors.border}` : "none",
+                    background: colors.card,
+                    cursor: "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: "50%",
+                      flexShrink: 0,
+                      boxSizing: "border-box",
+                      border: lang === code ? `2px solid ${themePrimary}` : `2px solid ${colors.border}`,
+                      background: lang === code ? themePrimary : "transparent",
+                    }}
+                    aria-hidden
+                  />
+                  <span style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>{code === "zh" ? t("lang_zh") : t("lang_en")}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={styles.navBar}>
-        <NavItem icon={Icons.search} label="找拼车" id="find" />
-        {role === "rider" && <NavItem icon={Icons.route} label="常用路线" id="saved" />}
-        {role === "driver" && <NavItem icon={Icons.plus} label="发布" id="post" />}
-        <NavItem icon={Icons.list} label="记录" id="history" />
-        <NavItem icon={Icons.user} label="我的" id="profile" />
+        <NavItem icon={Icons.search} label={role === "driver" ? t("nav_find_driver") : t("nav_find_rider")} id="find" />
+        <NavItem icon={Icons.route} label={t("nav_saved")} id="saved" />
+        <NavItem icon={Icons.list} label={t("nav_history")} id="history" />
+        <NavItem icon={Icons.user} label={t("nav_profile")} id="profile" />
       </div>
+
+      {driverPublishToast ? (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            left: "50%",
+            bottom: "max(88px, calc(72px + env(safe-area-inset-bottom)))",
+            transform: "translateX(-50%)",
+            zIndex: 5000,
+            maxWidth: 400,
+            width: "calc(100% - 32px)",
+            padding: "12px 16px",
+            borderRadius: 12,
+            background: colors.navy,
+            color: colors.white,
+            fontSize: 14,
+            fontWeight: 600,
+            textAlign: "center",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.22)",
+            fontFamily: "'Inter', system-ui, sans-serif",
+          }}
+        >
+          {driverPublishToast}
+        </div>
+      ) : null}
 
       {planTripOpen && role === "rider" && tab === "find" && (
           <div
@@ -4163,7 +5012,7 @@ export default function CollegeRide() {
                       fontFamily: "'Inter', system-ui, sans-serif",
                     }}
                   >
-                  <div style={{ fontSize: 14, fontWeight: 700, color: themePrimary, marginBottom: 12 }}>接载时间</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: themePrimary, marginBottom: 12 }}>{t("plan_pickup_time_title")}</div>
                   <button
                     type="button"
                     onClick={() => {
@@ -4179,9 +5028,9 @@ export default function CollegeRide() {
                       gap: 12,
                       padding: "12px 14px",
                       borderRadius: 12,
-                      border: "1px solid rgba(0,51,153,0.35)",
+                      border: "1px solid rgba(37,99,235,0.35)",
                       background:
-                        pickupMenuHighlight === "immediate" ? "rgba(0,51,153,0.1)" : "rgba(0,51,153,0.04)",
+                        pickupMenuHighlight === "immediate" ? "rgba(37,99,235,0.1)" : "rgba(37,99,235,0.04)",
                       color: themePrimary,
                       fontSize: 16,
                       fontWeight: 600,
@@ -4217,7 +5066,7 @@ export default function CollegeRide() {
                         />
                       ) : null}
                     </span>
-                    <span>立即接载</span>
+                    <span>{t("plan_pickup_now")}</span>
                   </button>
                   <button
                     type="button"
@@ -4234,9 +5083,9 @@ export default function CollegeRide() {
                       gap: 12,
                       padding: "12px 14px",
                       borderRadius: 12,
-                      border: "1px solid rgba(0,51,153,0.35)",
+                      border: "1px solid rgba(37,99,235,0.35)",
                       background:
-                        pickupMenuHighlight === "scheduled" ? "rgba(0,51,153,0.1)" : "rgba(0,51,153,0.04)",
+                        pickupMenuHighlight === "scheduled" ? "rgba(37,99,235,0.1)" : "rgba(37,99,235,0.04)",
                       color: themePrimary,
                       fontSize: 16,
                       fontWeight: 600,
@@ -4271,7 +5120,7 @@ export default function CollegeRide() {
                         />
                       ) : null}
                     </span>
-                    <span>预约出发</span>
+                    <span>{t("plan_pickup_scheduled")}</span>
                   </button>
 
                   <div
@@ -4287,7 +5136,7 @@ export default function CollegeRide() {
                       style={{
                         marginTop: 12,
                         paddingTop: 12,
-                        borderTop: "1px solid rgba(0,51,153,0.15)",
+                        borderTop: "1px solid rgba(37,99,235,0.15)",
                         flexShrink: 0,
                       }}
                     >
@@ -4312,6 +5161,7 @@ export default function CollegeRide() {
                         <TimeHourMinuteBlock
                           key={pickupWheelResetKey}
                           variant="light"
+                          label={t("label_time")}
                           hour24={scheduledHour}
                           minute={scheduledMinute}
                           onHour24Change={setScheduledHour}
@@ -4338,7 +5188,7 @@ export default function CollegeRide() {
                           marginBottom: 0,
                         }}
                       >
-                        完成
+                        {t("btn_done")}
                       </button>
                     </div>
                   </div>
@@ -4405,7 +5255,7 @@ export default function CollegeRide() {
                 >
                   <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
                 </button>
-                <span style={{ fontWeight: 600, fontSize: 17, color: "#fff", letterSpacing: "-0.02em" }}>规划您的行程</span>
+                <span style={{ fontWeight: 600, fontSize: 17, color: "#fff", letterSpacing: "-0.02em" }}>{t("plan_title")}</span>
               </div>
             </div>
 
@@ -4489,7 +5339,7 @@ export default function CollegeRide() {
                   }}
                 >
                   <span style={{ display: "flex" }}>{Icons.user}</span>
-                  为我本人
+                  {t("plan_for_me")}
                   <span style={{ opacity: 0.7, fontSize: 10 }}>▾</span>
                 </button>
               </div>
@@ -4533,7 +5383,7 @@ export default function CollegeRide() {
                         textTransform: "uppercase",
                       }}
                     >
-                      出发地
+                      {t("plan_origin_label")}
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "0 12px 8px", alignItems: "center" }}>
                       <div
@@ -4738,7 +5588,7 @@ export default function CollegeRide() {
                         textTransform: "uppercase",
                       }}
                     >
-                      目的地
+                      {t("plan_dest_label")}
                     </div>
                     <div style={{ padding: "0 12px 10px" }}>
                       <PlaceSuggestField
@@ -4845,6 +5695,7 @@ export default function CollegeRide() {
                             <TimeHourMinuteBlock
                               key={returnWheelKey}
                               variant="dark"
+                              label={t("label_time")}
                               hour24={returnHour}
                               minute={returnMinute}
                               onHour24Change={setReturnHour}
