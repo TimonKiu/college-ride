@@ -4369,7 +4369,6 @@ export default function CollegeRide() {
                       })}
                     </div>
                   ))}
-                </div>
               </div>
             </div>
           </>
