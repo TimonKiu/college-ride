@@ -3,6 +3,12 @@
   border: none !important;
 }
 
+/* 一周安排：防止 grid 子项 min-content 把列撑开导致只能横向滚动看到部分星期 */
+.cr-weekly-schedule-table {
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ── 导航栈：带「前进」语义（如 chevron 右）的下一屏从右侧滑入；返回（chevron 左）整层向右滑出 ── */
 :root {
   --cr-stack-ms: 200ms;
@@ -101,39 +107,31 @@
   animation: cr-modal-panel-out 180ms ease-in forwards;
 }
 
-/* 司机「发布路线」：全屏层自底部上滑 / 下滑收起，200ms */
-@keyframes cr-publish-sheet-in {
+/* 司机「发布路线」：全屏自右侧滑入，退出向右滑出，200ms（与 DRIVER_PUBLISH_SHEET_MS 一致） */
+@keyframes cr-driver-publish-panel-in {
   from {
-    transform: translate3d(0, 100%, 0);
+    transform: translate3d(100%, 0, 0);
   }
   to {
     transform: translate3d(0, 0, 0);
   }
 }
 
-@keyframes cr-publish-sheet-out {
+@keyframes cr-driver-publish-panel-out {
   from {
     transform: translate3d(0, 0, 0);
   }
   to {
-    transform: translate3d(0, 100%, 0);
+    transform: translate3d(100%, 0, 0);
   }
 }
 
-.cr-driver-publish-backdrop {
-  animation: cr-modal-backdrop-in 200ms ease-out both;
+.cr-driver-publish-panel {
+  animation: cr-driver-publish-panel-in 200ms ease-out both;
 }
 
-.cr-driver-publish-backdrop.cr-driver-publish-backdrop-exit {
-  animation: cr-modal-backdrop-out 200ms ease-in forwards;
-}
-
-.cr-driver-publish-sheet {
-  animation: cr-publish-sheet-in 200ms ease-out both;
-}
-
-.cr-driver-publish-sheet.cr-driver-publish-sheet-exit {
-  animation: cr-publish-sheet-out 200ms ease-in forwards;
+.cr-driver-publish-panel.cr-driver-publish-panel-exit {
+  animation: cr-driver-publish-panel-out 200ms ease-out forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -148,10 +146,8 @@
     animation: none !important;
   }
 
-  .cr-driver-publish-backdrop,
-  .cr-driver-publish-backdrop-exit,
-  .cr-driver-publish-sheet,
-  .cr-driver-publish-sheet-exit {
+  .cr-driver-publish-panel,
+  .cr-driver-publish-panel-exit {
     animation: none !important;
   }
 

@@ -6,6 +6,33 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./map.css";
 import { COLLEGE_VECTOR_MAP_STYLE, applyCollegeRoadHierarchy } from "./collegeRoadMapStyle.js";
 import { useAuth } from "./auth/AuthContext.jsx";
+import {
+  emptyLedger,
+  loadUserLedger,
+  persistUserLedger,
+  appendPassengerTrip,
+  appendDriverTrip,
+  parseUsdFromEarn,
+  totalTripCount,
+  monthlyPassengerSavingsUsd,
+  monthlyPassengerSavingsPct,
+  formatUsd,
+  formatCarbonKg,
+} from "./userLedger.js";
+
+function formatHistoryTripDate(ts, lang) {
+  const trip = new Date(ts);
+  const today = new Date();
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startTrip = new Date(trip.getFullYear(), trip.getMonth(), trip.getDate());
+  const diffDays = Math.round((startToday - startTrip) / 86400000);
+  if (diffDays === 0) return lang === "zh" ? "今天" : "Today";
+  if (diffDays === 1) return lang === "zh" ? "昨天" : "Yesterday";
+  if (lang === "zh") return `${trip.getMonth() + 1}月${trip.getDate()}日`;
+  const opts = { month: "short", day: "numeric" };
+  if (trip.getFullYear() !== today.getFullYear()) opts.year = "numeric";
+  return trip.toLocaleDateString("en-US", opts);
+}
 
 function UserLocationMarker({ lat, lng }) {
   if (lat == null || lng == null) return null;
@@ -356,109 +383,9 @@ function getNearestBuilding(lat, lng) {
   return { nearest, nearestKm };
 }
 
-const MOCK_RIDES = [
-  {
-    id: 1,
-    driver: "Alex K.",
-    school: "JHU",
-    from: "Homewood Gate",
-    to: "Charles Village",
-    time: "8:30 AM",
-    seats: 2,
-    price: 4.5,
-    detour: "5 min",
-    rating: 4.9,
-    ...(() => {
-      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
-      const [toLat, toLng] = BAL_AREA_POINTS["Charles Village"];
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-  {
-    id: 2,
-    driver: "Maya S.",
-    school: "JHU",
-    from: "Homewood Gate",
-    to: "Hampden",
-    time: "9:00 AM",
-    seats: 3,
-    price: 3.0,
-    detour: "3 min",
-    rating: 4.8,
-    ...(() => {
-      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
-      const [toLat, toLng] = BAL_AREA_POINTS.Hampden;
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-  {
-    id: 3,
-    driver: "Jordan T.",
-    school: "JHU",
-    from: "Peabody Institute",
-    to: "JHU East Baltimore",
-    time: "9:15 AM",
-    seats: 1,
-    price: 5.5,
-    detour: "8 min",
-    rating: 4.7,
-    ...(() => {
-      const [fromLat, fromLng] = BAL_AREA_POINTS["Peabody Institute"];
-      const [toLat, toLng] = BAL_AREA_POINTS["JHU East Baltimore"];
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-  {
-    id: 4,
-    driver: "Priya M.",
-    school: "JHU",
-    from: "Dupont Circle",
-    to: "SAIS (DC)",
-    time: "10:00 AM",
-    seats: 2,
-    price: 4.0,
-    detour: "6 min",
-    rating: 5.0,
-    ...(() => {
-      const [fromLat, fromLng] = DC_AREA_POINTS["Dupont Circle"];
-      const [toLat, toLng] = BAL_AREA_POINTS["SAIS (DC)"];
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-];
-
-const MOCK_REQUESTS = [
-  {
-    id: 1,
-    rider: "Sam L.",
-    school: "JHU",
-    from: "Homewood Gate",
-    to: "Charles Village",
-    time: "9:00 AM",
-    earn: "+$3.80",
-    detour: "4 min",
-    ...(() => {
-      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
-      const [toLat, toLng] = BAL_AREA_POINTS["Charles Village"];
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-  {
-    id: 2,
-    rider: "Lena W.",
-    school: "JHU",
-    from: "Homewood Gate",
-    to: "Hampden",
-    time: "8:45 AM",
-    earn: "+$5.20",
-    detour: "7 min",
-    ...(() => {
-      const [fromLat, fromLng] = BAL_AREA_POINTS["Homewood Gate"];
-      const [toLat, toLng] = BAL_AREA_POINTS.Hampden;
-      return { fromLat, fromLng, toLat, toLng };
-    })(),
-  },
-];
+/** 可替换为后端返回的待匹配列表；预览默认空，由行程完成后本地账本累计 */
+const RIDES_LISTING_POOL = [];
+const DRIVER_REQUESTS_POOL = [];
 
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
 
@@ -1573,6 +1500,9 @@ const STRINGS = {
     cb_set_time: "设置出发时间（可选）",
     label_depart_time_24h: "出发时间 · 24 小时制",
     empty_saved: "暂无常用路线。点击上方「创建常用路线」添加。",
+    empty_find_rides: "附近暂无拼车。可稍后再试或调整校区/出发地。",
+    empty_find_requests: "暂无乘客请求。发布路线后乘客可见。",
+    history_empty: "暂无出行记录。完成拼车后会出现在这里。",
     label_current_location: "当前位置",
     label_origin_fallback: "出发地",
     label_return_fallback: "返回点",
@@ -1601,7 +1531,8 @@ const STRINGS = {
     label_driver_was: "司机：{name}",
     label_seat_price: "{n} 座 · ${price} / 人",
     history_monthly_label: "本月合计节省",
-    history_monthly_vs: "相较网约车约省 42%",
+    history_monthly_vs: "相较网约车基准约省 {pct}%",
+    history_monthly_vs_pending: "完成乘客行程后将显示节省比例",
     /* ── 个人资料 tab ── */
     section_account: "账户",
     headline_profile: "个人资料",
@@ -1737,6 +1668,9 @@ const STRINGS = {
     cb_set_time: "Set departure time (optional)",
     label_depart_time_24h: "Departure Time (24h)",
     empty_saved: "No saved routes. Tap \"Create Saved Route\" above to add one.",
+    empty_find_rides: "No nearby rides yet. Try again later or adjust campus / origin.",
+    empty_find_requests: "No passenger requests yet. Publish a route to become visible.",
+    history_empty: "No trips yet. Completed carpools will show up here.",
     label_current_location: "Current Location",
     label_origin_fallback: "Origin",
     label_return_fallback: "Destination",
@@ -1765,7 +1699,8 @@ const STRINGS = {
     label_driver_was: "Driver: {name}",
     label_seat_price: "{n} seats · ${price} / person",
     history_monthly_label: "Saved this month",
-    history_monthly_vs: "~42% less than rideshare",
+    history_monthly_vs: "~{pct}% vs rideshare benchmark",
+    history_monthly_vs_pending: "Complete a rider trip to see your savings rate",
     /* ── 个人资料 tab ── */
     section_account: "Account",
     headline_profile: "Profile",
@@ -1827,6 +1762,11 @@ export default function CollegeRide() {
     return str.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
   };
   const tWeekdays = () => STRINGS[lang]?.weekdays ?? STRINGS.zh.weekdays;
+  /** 周表头：中文用单字避免七列挤不下；英文沿用 Mon–Sun */
+  const weeklyGridDayLabels = useMemo(() => {
+    if (lang === "zh") return ["一", "二", "三", "四", "五", "六", "日"];
+    return STRINGS.en.weekdays;
+  }, [lang]);
 
   const schoolDisplay = user?.school ?? USER_SCHOOL;
   const profileDisplayName =
@@ -2013,6 +1953,15 @@ export default function CollegeRide() {
   }, [driverPublishModalClosing]);
 
   useEffect(() => {
+    if (!driverPublishModalOpen && !driverPublishModalClosing) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [driverPublishModalOpen, driverPublishModalClosing]);
+
+  useEffect(() => {
     if (!scheduleModalClosing) return;
     const id = window.setTimeout(() => {
       setScheduleModalOpen(false);
@@ -2076,6 +2025,63 @@ export default function CollegeRide() {
     }
     setScheduleModalClosing(true);
   }, [scheduleModalClosing]);
+
+  const userId = user?.id ?? null;
+  const [ledger, setLedger] = useState(() => emptyLedger());
+
+  useEffect(() => {
+    setLedger(loadUserLedger(userId));
+  }, [userId]);
+
+  const tripCountAll = useMemo(() => totalTripCount(ledger.stats), [ledger.stats]);
+  const monthlySavingsDisplay = useMemo(() => monthlyPassengerSavingsUsd(ledger.trips), [ledger.trips]);
+  const monthlySavingsPctValue = useMemo(() => monthlyPassengerSavingsPct(ledger.trips), [ledger.trips]);
+
+  const commitPassengerBooking = useCallback(
+    (ride) => {
+      if (!ride) return;
+      setLedger((prev) => {
+        const next = appendPassengerTrip(prev, {
+          from: ride.from,
+          to: ride.to,
+          fromLat: ride.fromLat,
+          fromLng: ride.fromLng,
+          toLat: ride.toLat,
+          toLng: ride.toLng,
+          priceUsd: Number(ride.price) || 0,
+          driverName: ride.driver,
+          seats: ride.seats,
+        });
+        if (userId) persistUserLedger(userId, next);
+        return next;
+      });
+    },
+    [userId]
+  );
+
+  const commitDriverBooking = useCallback(
+    (req) => {
+      if (!req) return;
+      const gross = parseUsdFromEarn(req.earn);
+      const incomeUsd = gross * 0.82;
+      setLedger((prev) => {
+        const next = appendDriverTrip(prev, {
+          from: req.from,
+          to: req.to,
+          fromLat: req.fromLat,
+          fromLng: req.fromLng,
+          toLat: req.toLat,
+          toLng: req.toLng,
+          incomeUsd,
+          riderName: req.rider,
+          seats: 3,
+        });
+        if (userId) persistUserLedger(userId, next);
+        return next;
+      });
+    },
+    [userId]
+  );
 
   useEffect(() => {
     if (role === "driver" && tab === "post") setTab("find");
@@ -2712,7 +2718,7 @@ export default function CollegeRide() {
 
   const matchedRides = useMemo(() => {
     const MAX_KM = 40;
-    const scored = MOCK_RIDES.map((r) => ({
+    const scored = RIDES_LISTING_POOL.map((r) => ({
       ...r,
       _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
     }));
@@ -2723,7 +2729,7 @@ export default function CollegeRide() {
 
   const matchedRequests = useMemo(() => {
     const MAX_KM = 40;
-    const scored = MOCK_REQUESTS.map((r) => ({
+    const scored = DRIVER_REQUESTS_POOL.map((r) => ({
       ...r,
       _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
     }));
@@ -3110,7 +3116,13 @@ export default function CollegeRide() {
             </div>
           </div>
 
-          <button style={{ ...styles.btn, marginTop: 8 }} onClick={() => setConfirmed(true)}>
+          <button
+            style={{ ...styles.btn, marginTop: 8 }}
+            onClick={() => {
+              commitPassengerBooking(selectedRide);
+              setConfirmed(true);
+            }}
+          >
             确认拼车
           </button>
           <button
@@ -3133,7 +3145,7 @@ export default function CollegeRide() {
           <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 12 }}>
             <button
               type="button"
-              onClick={() => setSelectedRequest(null)}
+              onClick={beginCloseRequestDetail}
               style={{
                 background: "rgba(255,255,255,0.1)",
                 border: "1px solid rgba(255,255,255,0.15)",
@@ -3216,10 +3228,17 @@ export default function CollegeRide() {
             <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>接单后以实际绕路为准</div>
           </div>
 
-          <button type="button" style={{ ...styles.btn, marginTop: 8 }} onClick={() => setSelectedRequest(null)}>
+          <button
+            type="button"
+            style={{ ...styles.btn, marginTop: 8 }}
+            onClick={() => {
+              commitDriverBooking(req);
+              beginCloseRequestDetail();
+            }}
+          >
             接受订单
           </button>
-          <button type="button" style={{ ...styles.btnOutline, marginTop: 12 }} onClick={() => setSelectedRequest(null)}>
+          <button type="button" style={{ ...styles.btnOutline, marginTop: 12 }} onClick={beginCloseRequestDetail}>
             返回
           </button>
         </div>
@@ -3399,7 +3418,12 @@ export default function CollegeRide() {
           key={role}
           style={{
             flex: 1,
+            minWidth: 0,
+            width: "100%",
+            maxWidth: "100%",
+            boxSizing: "border-box",
             overflowY: "auto",
+            overflowX: "hidden",
             padding: "18px 16px 96px",
             background: colors.page,
             animation:
@@ -3529,6 +3553,11 @@ export default function CollegeRide() {
             <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
               {t("desc_nearby", { campus: activeCampus.short })}
             </p>
+            {matchedRides.length === 0 ? (
+              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
+                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("empty_find_rides")}</div>
+              </div>
+            ) : null}
             {matchedRides.map((ride) => (
               <div
                 key={ride.id}
@@ -3621,76 +3650,118 @@ export default function CollegeRide() {
               <span>{t("headline_driver_publish")}</span>
             </button>
 
-            {driverPublishModalOpen && (
-              <div
-                style={{
-                  position: "fixed",
-                  inset: 0,
-                  zIndex: 10052,
-                  margin: "0 auto",
-                  maxWidth: 430,
-                  width: "100%",
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                  pointerEvents: "auto",
-                }}
-              >
-                <button
-                  type="button"
-                  aria-label={t("btn_cancel")}
-                  onClick={beginCloseDriverPublishModal}
-                  className={
-                    driverPublishModalClosing
-                      ? "cr-driver-publish-backdrop cr-driver-publish-backdrop-exit"
-                      : "cr-driver-publish-backdrop"
-                  }
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    border: "none",
-                    background: "rgba(0,0,0,0.5)",
-                    cursor: "pointer",
-                  }}
-                />
+            {driverPublishModalOpen &&
+              typeof document !== "undefined" &&
+              createPortal(
                 <div
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="cr-driver-publish-title"
-                  onClick={(e) => e.stopPropagation()}
-                  className={
-                    driverPublishModalClosing
-                      ? "cr-driver-publish-sheet cr-driver-publish-sheet-exit"
-                      : "cr-driver-publish-sheet"
-                  }
                   style={{
-                    position: "absolute",
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    top: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    background: colors.card,
-                    color: colors.text,
-                    zIndex: 1,
-                    boxShadow: "0 -8px 40px rgba(0,0,0,0.12)",
-                    paddingTop: "max(12px, env(safe-area-inset-top))",
-                    paddingBottom: "max(16px, env(safe-area-inset-bottom))",
-                    paddingLeft: 18,
-                    paddingRight: 18,
-                    boxSizing: "border-box",
+                    position: "fixed",
+                    inset: 0,
+                    zIndex: 100055,
+                    pointerEvents: "auto",
+                    fontFamily: "'Inter', system-ui, sans-serif",
                   }}
                 >
                   <div
+                    aria-hidden
                     style={{
-                      flex: 1,
-                      minHeight: 0,
-                      overflowY: "auto",
-                      WebkitOverflowScrolling: "touch",
+                      position: "absolute",
+                      inset: 0,
+                      background: "rgba(0,0,0,0.42)",
+                      pointerEvents: "auto",
+                    }}
+                  />
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="cr-driver-publish-title"
+                    className={
+                      driverPublishModalClosing
+                        ? "cr-driver-publish-panel cr-driver-publish-panel-exit"
+                        : "cr-driver-publish-panel"
+                    }
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      width: "100%",
+                      maxWidth: 430,
+                      margin: "0 auto",
+                      display: "flex",
+                      flexDirection: "column",
+                      background: colors.card,
+                      color: colors.text,
+                      zIndex: 1,
+                      boxSizing: "border-box",
+                      boxShadow: "-6px 0 32px rgba(0,0,0,0.18)",
+                      pointerEvents: "auto",
+                      touchAction: "auto",
                     }}
                   >
-                  <div id="cr-driver-publish-title" style={{ fontWeight: 800, fontSize: 18, marginBottom: 14, color: colors.text }}>
-                    {t("headline_driver_publish")}
-                  </div>
+                    <div
+                      style={{
+                        flexShrink: 0,
+                        paddingTop: "max(10px, env(safe-area-inset-top))",
+                        paddingLeft: 12,
+                        paddingRight: 12,
+                        paddingBottom: 10,
+                        borderBottom: `1px solid ${colors.border}`,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        background: colors.card,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={beginCloseDriverPublishModal}
+                        aria-label={t("btn_back")}
+                        style={{
+                          flexShrink: 0,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          padding: "8px 6px 8px 0",
+                          border: "none",
+                          background: "none",
+                          color: colors.text,
+                          fontWeight: 600,
+                          fontSize: 16,
+                          cursor: "pointer",
+                          fontFamily: "'Inter', system-ui, sans-serif",
+                        }}
+                      >
+                        <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
+                        {t("btn_back")}
+                      </button>
+                      <div
+                        id="cr-driver-publish-title"
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          textAlign: "center",
+                          fontWeight: 700,
+                          fontSize: 17,
+                          color: colors.text,
+                        }}
+                      >
+                        {t("headline_driver_publish")}
+                      </div>
+                      <div style={{ width: 72, flexShrink: 0 }} aria-hidden />
+                    </div>
+                    <div
+                      style={{
+                        flex: 1,
+                        minHeight: 0,
+                        overflowY: "auto",
+                        WebkitOverflowScrolling: "touch",
+                        paddingLeft: 18,
+                        paddingRight: 18,
+                        paddingTop: 14,
+                      }}
+                    >
                   <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{t("label_origin")}</div>
                   <input
                     value={publishFrom}
@@ -3781,45 +3852,39 @@ export default function CollegeRide() {
                     <div style={{ fontSize: 14, color: colors.navy, fontWeight: 600 }}>{t("driver_price_card_title")}</div>
                     <div style={{ fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 1.5 }}>{t("platform_fee_driver_blurb")}</div>
                   </div>
-
-                  <div style={{ display: "flex", gap: 8, marginTop: 4, paddingBottom: 4 }}>
-                    <button
-                      type="button"
-                      onClick={beginCloseDriverPublishModal}
+                    </div>
+                    <div
                       style={{
-                        flex: 1,
-                        padding: "12px 14px",
-                        borderRadius: 10,
-                        border: `1px solid ${colors.border}`,
-                        background: colors.white,
-                        color: colors.text,
-                        fontWeight: 600,
-                        fontSize: 14,
-                        cursor: "pointer",
-                        fontFamily: "'Inter', system-ui, sans-serif",
+                        flexShrink: 0,
+                        padding: "12px 18px max(16px, env(safe-area-inset-bottom))",
+                        borderTop: `1px solid ${colors.border}`,
+                        background: colors.card,
                       }}
                     >
-                      {t("btn_cancel")}
-                    </button>
-                    <button
-                      type="button"
-                      style={{ ...styles.btn, flex: 1, marginBottom: 0 }}
-                      onClick={() => {
-                        setDriverPublishToast(t("publish_toast"));
-                        window.setTimeout(() => setDriverPublishToast(""), 2800);
-                        beginCloseDriverPublishModal();
-                      }}
-                    >
-                      {t("btn_publish_trip")}
-                    </button>
+                      <button
+                        type="button"
+                        style={{ ...styles.btn, marginBottom: 0 }}
+                        onClick={() => {
+                          setDriverPublishToast(t("publish_toast"));
+                          window.setTimeout(() => setDriverPublishToast(""), 2800);
+                          beginCloseDriverPublishModal();
+                        }}
+                      >
+                        {t("btn_publish_trip")}
+                      </button>
+                    </div>
                   </div>
-                  </div>
-                </div>
-              </div>
-            )}
+                </div>,
+                document.body
+              )}
 
             <div style={{ ...styles.sectionTitle, marginTop: 4 }}>{t("section_find_passengers")}</div>
             <div style={styles.sectionHeadline}>{t("headline_driver_browse_passengers")}</div>
+            {matchedRequests.length === 0 ? (
+              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
+                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("empty_find_requests")}</div>
+              </div>
+            ) : null}
             {matchedRequests.map((req) => (
               <div
                 key={req.id}
@@ -4153,83 +4218,93 @@ export default function CollegeRide() {
               })
             )}
 
-            <div style={{ ...styles.sectionTitle, marginTop: 8 }}>{t("section_weekly")}</div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-                marginBottom: 6,
-                flexWrap: "nowrap",
-              }}
-            >
-              <div style={{ ...styles.sectionHeadline, margin: 0, flex: "1 1 auto", minWidth: 0 }}>{t("headline_weekly")}</div>
-              <button
-                type="button"
-                onClick={openScheduleModal}
-                aria-label={t("btn_add_schedule")}
-                title={t("btn_add_schedule")}
-                style={{
-                  flexShrink: 0,
-                  width: 40,
-                  height: 40,
-                  borderRadius: 12,
-                  border: `1.5px solid ${colors.navy}`,
-                  background: colors.white,
-                  color: colors.navy,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  padding: 0,
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
-                }}
-              >
-                <span style={{ display: "flex" }}>{Icons.plus}</span>
-              </button>
-            </div>
-            <p style={{ fontSize: 13, color: colors.muted, marginTop: 0, marginBottom: 12, lineHeight: 1.55 }}>
-              {t("desc_weekly")}
-            </p>
-
-            <div style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}>
+            <div style={{ marginTop: 8, marginBottom: 10, minWidth: 0, width: "100%" }}>
               <div
                 style={{
-                  width: "100%",
-                  maxWidth: "100%",
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 10,
-                  overflow: "hidden",
-                  background: colors.page,
-                  boxSizing: "border-box",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  marginBottom: 8,
                 }}
               >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ ...styles.sectionTitle, marginTop: 0, marginBottom: 4 }}>{t("section_weekly")}</div>
+                  <div style={{ ...styles.sectionHeadline, margin: 0 }}>{t("headline_weekly")}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={openScheduleModal}
+                  aria-label={t("btn_add_schedule")}
+                  title={t("btn_add_schedule")}
+                  style={{
+                    flexShrink: 0,
+                    width: 44,
+                    height: 44,
+                    borderRadius: 12,
+                    border: `1.5px solid ${colors.navy}`,
+                    background: colors.white,
+                    color: colors.navy,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    padding: 0,
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+                    marginTop: 2,
+                  }}
+                >
+                  <span style={{ display: "flex" }}>{Icons.plus}</span>
+                </button>
+              </div>
+              <p style={{ fontSize: 13, color: colors.muted, margin: "0 0 12px", lineHeight: 1.55 }}>
+                {t("desc_weekly")}
+              </p>
+            </div>
+
+            <div
+              className="cr-weekly-schedule-table"
+              style={{
+                width: "100%",
+                maxWidth: "100%",
+                minWidth: 0,
+                marginBottom: 8,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 10,
+                overflow: "hidden",
+                background: colors.page,
+                boxSizing: "border-box",
+              }}
+            >
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "minmax(26px, 32px) repeat(7, minmax(0, 1fr))",
+                      gridTemplateColumns: "22px repeat(7, minmax(0, 1fr))",
                       gap: 0,
                       background: colors.card,
                       borderBottom: `1px solid ${colors.border}`,
                       width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
                     }}
                   >
-                    <div style={{ minHeight: 24 }} aria-hidden />
-                    {tWeekdays().map((label) => (
+                    <div style={{ minHeight: 22, minWidth: 0 }} aria-hidden />
+                    {weeklyGridDayLabels.map((label) => (
                       <div
                         key={label}
                         style={{
                           textAlign: "center",
-                          fontSize: 10,
+                          fontSize: 9,
                           fontWeight: 700,
                           color: colors.muted,
-                          padding: "6px 1px",
+                          padding: "5px 0",
                           letterSpacing: 0,
                           borderLeft: `1px solid ${colors.border}`,
                           minWidth: 0,
+                          maxWidth: "100%",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
                       >
                         {label}
@@ -4241,23 +4316,27 @@ export default function CollegeRide() {
                       key={slotStart}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "minmax(26px, 32px) repeat(7, minmax(0, 1fr))",
+                        gridTemplateColumns: "22px repeat(7, minmax(0, 1fr))",
                         gap: 0,
                         borderTop: slotStart > scheduleWeekGridBounds.rowStartMin ? `1px solid ${colors.border}` : undefined,
-                        minHeight: 48,
+                        minHeight: 44,
                         width: "100%",
+                        minWidth: 0,
+                        boxSizing: "border-box",
                       }}
                     >
                       <div
                         style={{
-                          fontSize: 9,
+                          fontSize: 8,
                           fontWeight: 700,
                           color: colors.muted,
-                          padding: "6px 2px 0 0",
+                          padding: "5px 1px 0 0",
                           textAlign: "right",
                           background: colors.page,
                           boxSizing: "border-box",
-                          lineHeight: 1.2,
+                          lineHeight: 1.15,
+                          minWidth: 0,
+                          overflow: "hidden",
                         }}
                       >
                         {formatScheduleMinutes(slotStart)}
@@ -4275,13 +4354,15 @@ export default function CollegeRide() {
                               borderLeft: `1px solid ${colors.border}`,
                               padding: 2,
                               background: colors.white,
-                              minHeight: 44,
+                              minHeight: 40,
                               minWidth: 0,
+                              maxWidth: "100%",
                               display: "flex",
                               flexDirection: "column",
-                              gap: 3,
+                              gap: 2,
                               alignItems: "stretch",
                               boxSizing: "border-box",
+                              overflow: "hidden",
                             }}
                           >
                             {cellItems.map((entry) => {
@@ -4298,22 +4379,44 @@ export default function CollegeRide() {
                                   style={{
                                     background: colors.card,
                                     borderRadius: 6,
-                                    padding: "6px 6px 4px",
+                                    padding: "5px 4px 4px",
                                     border: `1px solid ${colors.border}`,
-                                    fontSize: 10,
-                                    lineHeight: 1.3,
+                                    fontSize: 9,
+                                    lineHeight: 1.25,
+                                    minWidth: 0,
+                                    maxWidth: "100%",
+                                    overflow: "hidden",
                                   }}
                                 >
                                   {showDep && (
                                     <>
-                                      <div style={{ fontWeight: 700, color: colors.navy, fontSize: 10, marginBottom: 2 }}>
+                                      <div style={{ fontWeight: 700, color: colors.navy, fontSize: 9, marginBottom: 2 }}>
                                         {formatScheduleMinutes(entry.minutes)}
                                       </div>
-                                      <div style={{ color: colors.text, marginBottom: showRet ? 4 : 4 }}>{routeShort}</div>
+                                      <div
+                                        style={{
+                                          color: colors.text,
+                                          marginBottom: showRet ? 4 : 4,
+                                          wordBreak: "break-word",
+                                          overflowWrap: "anywhere",
+                                        }}
+                                      >
+                                        {routeShort}
+                                      </div>
                                     </>
                                   )}
                                   {showRet && !showDep && (
-                                    <div style={{ color: colors.text, marginBottom: 4, fontSize: 10 }}>{routeShort}</div>
+                                    <div
+                                      style={{
+                                        color: colors.text,
+                                        marginBottom: 4,
+                                        fontSize: 9,
+                                        wordBreak: "break-word",
+                                        overflowWrap: "anywhere",
+                                      }}
+                                    >
+                                      {routeShort}
+                                    </div>
                                   )}
                                   {showRet && (
                                     <div style={{ fontSize: 9, fontWeight: 600, color: colors.muted, marginBottom: 4 }}>
@@ -4369,7 +4472,6 @@ export default function CollegeRide() {
                       })}
                     </div>
                   ))}
-              </div>
             </div>
           </>
         )}
@@ -4686,25 +4788,46 @@ export default function CollegeRide() {
           <>
             <div style={styles.sectionTitle}>{t("section_history")}</div>
             <div style={styles.sectionHeadline}>{t("headline_history")}</div>
-            {[
-              { date: lang === "en" ? "Today" : "今天", from: "Foggy Bottom", to: "Capitol Hill", cost: "$4.50", type: t("tag_passenger"), driver: "Alex K." },
-              { date: lang === "en" ? "Yesterday" : "昨天", from: "Georgetown", to: "Dupont Circle", cost: "$3.00", type: t("tag_passenger"), driver: "Maya S." },
-              { date: lang === "en" ? "Mar 5" : "3月5日", from: "Tenleytown", to: "Downtown DC", cost: "+$6.20", type: t("tag_driver"), driver: lang === "en" ? "You" : "你" },
-            ].map((item, i) => (
-              <div key={i} style={styles.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600 }}>{item.date}</div>
-                  <Tag text={item.type} accent={themePrimary} />
-                </div>
-                <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
-                  {item.from} — {item.to}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 13, color: colors.muted }}>{item.type === t("tag_passenger") ? t("label_driver_was", { name: item.driver }) : t("label_you_drove")}</span>
-                  <span style={{ fontWeight: 700, fontSize: 16, color: item.type === t("tag_driver") ? colors.navy : colors.text }}>{item.cost}</span>
-                </div>
+            {ledger.trips.length === 0 ? (
+              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
+                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("history_empty")}</div>
               </div>
-            ))}
+            ) : (
+              ledger.trips.map((trip) => {
+                const isPassenger = trip.role === "passenger";
+                const typeLabel = isPassenger ? t("tag_passenger") : t("tag_driver");
+                const sub =
+                  isPassenger && trip.driverName
+                    ? t("label_driver_was", { name: trip.driverName })
+                    : !isPassenger
+                      ? t("label_you_drove")
+                      : "";
+                const costStr = isPassenger ? formatUsd(trip.priceUsd) : `+${formatUsd(trip.incomeUsd)}`;
+                return (
+                  <div key={trip.id} style={styles.card}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600 }}>{formatHistoryTripDate(trip.ts, lang)}</div>
+                      <Tag text={typeLabel} accent={themePrimary} />
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
+                      {trip.from} — {trip.to}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 13, color: colors.muted }}>{sub}</span>
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 16,
+                          color: isPassenger ? colors.text : colors.navy,
+                        }}
+                      >
+                        {costStr}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
             <div
               style={{
                 ...styles.card,
@@ -4714,8 +4837,10 @@ export default function CollegeRide() {
               }}
             >
               <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 600, letterSpacing: "0.06em" }}>{t("history_monthly_label")}</div>
-              <div style={{ color: colors.white, fontSize: 34, fontWeight: 700, letterSpacing: "-0.03em" }}>$24.50</div>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 6 }}>{t("history_monthly_vs")}</div>
+              <div style={{ color: colors.white, fontSize: 34, fontWeight: 700, letterSpacing: "-0.03em" }}>{formatUsd(monthlySavingsDisplay)}</div>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 6 }}>
+                {monthlySavingsPctValue != null ? t("history_monthly_vs", { pct: monthlySavingsPctValue }) : t("history_monthly_vs_pending")}
+              </div>
             </div>
           </>
         )}
@@ -4748,16 +4873,18 @@ export default function CollegeRide() {
               <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>{user?.email ?? ""}</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", alignItems: "center" }}>
                 <Tag text={t("tag_verified_student")} accent={themePrimary} />
-                <StarRating rating={4.9} accent={themePrimary} />
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
               {[
-                { label: t("stat_total_trips"), value: lang === "en" ? "12 trips" : "12 次" },
-                { label: t("stat_savings"), value: "$67.20" },
-                { label: t("stat_driver_income"), value: "$18.60" },
-                { label: t("stat_carbon"), value: "23 kg" },
+                {
+                  label: t("stat_total_trips"),
+                  value: lang === "en" ? `${tripCountAll} trip${tripCountAll === 1 ? "" : "s"}` : `${tripCountAll} 次`,
+                },
+                { label: t("stat_savings"), value: formatUsd(ledger.stats.riderSavingsUsd) },
+                { label: t("stat_driver_income"), value: formatUsd(ledger.stats.driverIncomeUsd) },
+                { label: t("stat_carbon"), value: formatCarbonKg(ledger.stats.carbonKg) },
               ].map((item) => (
                 <div key={item.label} style={{ ...styles.card, textAlign: "center", padding: "16px 12px" }}>
                   <div style={{ fontSize: 20, fontWeight: 700, color: colors.text }}>{item.value}</div>
