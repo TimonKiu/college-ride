@@ -24,9 +24,12 @@ export const AUTH_STRINGS = {
     err_invalid_creds: "邮箱或密码不正确",
     err_email_used: "该邮箱已注册，请直接登录",
     err_not_edu: "仅允许 .edu 学校邮箱（美国院校电子邮件域名）。",
+    err_tos_required: "请先阅读并勾选同意《服务条款》。",
     banner_local: "当前为浏览器本地账户（数据仅本机）。配置 Supabase 后可云端同步与多设备登录，详见项目 docs/AUTH.md。",
     logout: "退出登录",
-    footer_terms: "继续使用即表示你同意平台服务条款与隐私说明（预览版）。",
+    tos_prefix: "我已阅读并同意",
+    tos_link: "《服务条款》",
+    tos_suffix: "。",
   },
   en: {
     title: "CollegeRide",
@@ -52,9 +55,12 @@ export const AUTH_STRINGS = {
     err_invalid_creds: "Invalid email or password",
     err_email_used: "This email is already registered. Sign in instead.",
     err_not_edu: "Only .edu institutional email addresses are allowed.",
+    err_tos_required: "Please read and check the box to agree to the Terms of Service.",
     banner_local:
       "Using on-device accounts (data stays on this browser). Configure Supabase for cloud sync and multi-device sign-in — see docs/AUTH.md.",
     logout: "Log Out",
-    footer_terms: "By continuing you agree to the Terms and Privacy Policy (preview).",
+    tos_prefix: "I have read and agree to the ",
+    tos_link: "Terms of Service",
+    tos_suffix: ".",
   },
 };

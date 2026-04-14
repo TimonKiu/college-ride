@@ -3,6 +3,7 @@ import { AUTH_STRINGS } from "./authStrings.js";
 import { useAuth } from "./AuthContext.jsx";
 import { isInstitutionalEduEmail } from "./eduEmail.js";
 import { getSchoolFromEmail } from "./schoolFromEmail.js";
+import TermsOfServicePage from "./TermsOfServicePage.jsx";
 
 const RIDER_PRIMARY = "#2563EB";
 const FONT = "'Inter', system-ui, sans-serif";
@@ -24,6 +25,8 @@ export default function AuthScreens() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmHint, setConfirmHint] = useState(false);
+  const [tosAccepted, setTosAccepted] = useState(false);
+  const [termsView, setTermsView] = useState(false);
 
   const titleStyle = useMemo(
     () => ({
@@ -92,6 +95,10 @@ export default function AuthScreens() {
       setError(s.err_password_match);
       return;
     }
+    if (!tosAccepted) {
+      setError(s.err_tos_required);
+      return;
+    }
     setPending(true);
     try {
       const res = await signUp({
@@ -115,6 +122,10 @@ export default function AuthScreens() {
     } finally {
       setPending(false);
     }
+  }
+
+  if (termsView) {
+    return <TermsOfServicePage lang={lang} onBack={() => setTermsView(false)} />;
   }
 
   return (
@@ -153,6 +164,7 @@ export default function AuthScreens() {
                 setMode(m);
                 setError("");
                 setConfirmHint(false);
+                setTosAccepted(false);
               }}
               style={{
                 flex: 1,
@@ -275,9 +287,66 @@ export default function AuthScreens() {
             <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12, fontWeight: 500 }}>{error}</div>
           ) : null}
 
+          {mode === "register" ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                marginBottom: 14,
+                marginTop: 2,
+              }}
+            >
+              <input
+                id="cr-tos-consent"
+                type="checkbox"
+                checked={tosAccepted}
+                onChange={(e) => {
+                  setTosAccepted(e.target.checked);
+                  setError("");
+                }}
+                style={{
+                  marginTop: 3,
+                  width: 18,
+                  height: 18,
+                  flexShrink: 0,
+                  cursor: "pointer",
+                  accentColor: RIDER_PRIMARY,
+                }}
+              />
+              <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.55 }}>
+                <label htmlFor="cr-tos-consent" style={{ cursor: "pointer" }}>
+                  {s.tos_prefix}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setTermsView(true)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    margin: 0,
+                    color: RIDER_PRIMARY,
+                    fontWeight: 700,
+                    textDecoration: "underline",
+                    textUnderlineOffset: 2,
+                    cursor: "pointer",
+                    fontSize: "inherit",
+                    fontFamily: FONT,
+                  }}
+                >
+                  {s.tos_link}
+                </button>
+                <label htmlFor="cr-tos-consent" style={{ cursor: "pointer" }}>
+                  {s.tos_suffix}
+                </label>
+              </div>
+            </div>
+          ) : null}
+
           <button
             type="submit"
-            disabled={pending}
+            disabled={pending || (mode === "register" && !tosAccepted)}
             style={{
               width: "100%",
               marginTop: 6,
@@ -288,8 +357,8 @@ export default function AuthScreens() {
               color: "#fff",
               fontSize: 16,
               fontWeight: 700,
-              cursor: pending ? "not-allowed" : "pointer",
-              opacity: pending ? 0.7 : 1,
+              cursor: pending || (mode === "register" && !tosAccepted) ? "not-allowed" : "pointer",
+              opacity: pending || (mode === "register" && !tosAccepted) ? 0.55 : 1,
               fontFamily: FONT,
             }}
           >
@@ -303,10 +372,6 @@ export default function AuthScreens() {
           </button>
         </form>
       </div>
-
-      <p style={{ maxWidth: 400, marginTop: 20, fontSize: 11, color: "#94a3b8", textAlign: "center", lineHeight: 1.5 }}>
-        {s.footer_terms}
-      </p>
     </div>
   );
 }
