@@ -19,7 +19,10 @@ export function publishedRideRowToUi(row) {
     time: row.depart_time || "—",
     seats: row.seats ?? 2,
     detour: row.detour || "+10 min",
+    // price = what driver earns (after platform fee)
     price: row.price != null ? Number(row.price) : 8.5,
+    // passengerFare = what passenger pays (before platform fee)
+    passengerFare: row.passenger_fare != null ? Number(row.passenger_fare) : null,
     rating: row.rating != null ? Number(row.rating) : 5,
     createdAt,
   };
@@ -96,6 +99,7 @@ export async function insertPublishedRide(p) {
     depart_time: p.departTime,
     seats: p.seats,
     price: p.price ?? 8.5,
+    passenger_fare: p.passengerFare ?? p.price ?? 8.5,
     detour: p.detour ?? "+10 min",
     rating: 5,
   };

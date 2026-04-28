@@ -16,6 +16,8 @@ import { isSupabaseConfigured } from "./supabase/client.js";
 import { fetchPublishedRides, fetchMyPublishedRides, insertPublishedRide, deletePublishedRide } from "./api/publishedRides.js";
 import { fetchPassengerRequests, fetchMyPassengerRequests, insertPassengerRequest, deletePassengerRequest } from "./api/passengerRequests.js";
 import { fetchMyBookings, insertBooking, deleteBooking } from "./api/bookings.js";
+import { fetchRouteInfo } from "./api/routeInfo.js";
+import { calculateFare, calculateFareFallback } from "./utils/fareCalculator.js";
 import {
   emptyLedger,
   loadUserLedger,
@@ -2575,6 +2577,26 @@ export default function CollegeRide() {
           return { ok: false };
         }
         const driverName = user?.displayName?.trim() || user?.email?.split("@")[0] || "Driver";
+
+        // Calculate fare dynamically via Google Distance Matrix API
+        const departureUnix = (() => {
+          const now = Math.floor(Date.now() / 1000);
+          // Try to parse the time string (e.g. "8:30 AM", "Now", "明天 9:00")
+          const parsed = Date.parse(timeT);
+          return Number.isFinite(parsed) && parsed / 1000 > now ? Math.floor(parsed / 1000) : now;
+        })();
+        const routeInfo = await fetchRouteInfo({
+          fromLat: fromCoords.lat, fromLng: fromCoords.lng,
+          toLat: toCoords.lat, toLng: toCoords.lng,
+          departureUnix,
+        });
+        const { passengerPays, driverEarns } = routeInfo
+          ? calculateFare(routeInfo.distanceKm, routeInfo.durationMin)
+          : calculateFareFallback(fromCoords.lat, fromCoords.lng, toCoords.lat, toCoords.lng);
+        const detourStr = routeInfo
+          ? `+${Math.round(routeInfo.durationMin)} min`
+          : "+10 min";
+
         const localRide = {
           id: `local-${Date.now()}`,
           driverId: user?.id ?? "local",
@@ -2588,8 +2610,8 @@ export default function CollegeRide() {
           toLng: toCoords.lng,
           time: timeT,
           seats: postSeats,
-          price: 8.5,
-          detour: "+10 min",
+          price: driverEarns,
+          detour: detourStr,
           rating: 5,
           createdAt: Date.now(),
         };
@@ -2604,8 +2626,9 @@ export default function CollegeRide() {
           toLng: toCoords.lng,
           departTime: timeT,
           seats: postSeats,
-          price: 8.5,
-          detour: "+10 min",
+          price: driverEarns,
+          detour: detourStr,
+          passengerFare: passengerPays,
         });
         if (error) {
           if (error.message === "NOT_SIGNED_IN") {
@@ -3993,7 +4016,7 @@ export default function CollegeRide() {
             }}
           >
             <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 500 }}>{t("label_est_cost")}</div>
-            <div style={{ color: colors.white, fontSize: 36, fontWeight: 700, letterSpacing: "-0.03em" }}>${selectedRide.price.toFixed(2)}</div>
+            <div style={{ color: colors.white, fontSize: 36, fontWeight: 700, letterSpacing: "-0.03em" }}>${(selectedRide.passengerFare ?? selectedRide.price).toFixed(2)}</div>
             <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, marginTop: 6 }}>{t("label_vs_rideshare")}</div>
           </div>
           <button
@@ -4120,7 +4143,7 @@ export default function CollegeRide() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <div>
                 <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, fontWeight: 500 }}>{t("label_amount_due")}</div>
-                <div style={{ fontSize: 30, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>${selectedRide.price.toFixed(2)}</div>
+                <div style={{ fontSize: 30, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>${(selectedRide.passengerFare ?? selectedRide.price).toFixed(2)}</div>
                 <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>{t("label_platform_fee")}</div>
               </div>
               <div style={{ textAlign: "right" }}>
