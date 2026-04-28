@@ -1,3 +1,4 @@
+import { BrowserRouter } from "react-router-dom";
 import CollegeRide from "./CollegeRide.jsx";
 import { AuthProvider, useAuth } from "./auth/AuthContext.jsx";
 import AuthScreens from "./auth/AuthScreens.jsx";
@@ -27,7 +28,9 @@ function AppGate() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppGate />
+      <BrowserRouter>
+        <AppGate />
+      </BrowserRouter>
     </AuthProvider>
   );
 }

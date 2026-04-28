@@ -161,6 +161,61 @@
   }
 }
 
+/* ── 按钮点击反馈：所有 button 默认加速度感 ── */
+button {
+  transition: transform 0.12s ease, opacity 0.12s ease,
+              background-color 0.18s ease, border-color 0.18s ease,
+              color 0.18s ease;
+  touch-action: manipulation;
+}
+button:active {
+  transform: scale(0.96);
+  opacity: 0.82;
+}
+
+/* ── 底部导航：切换时图标+文字丝滑过渡，点击有下压感 ── */
+.cr-nav-item {
+  transition: color 0.18s ease, background-color 0.18s ease,
+              transform 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cr-nav-item:active {
+  transform: scale(0.85);
+  opacity: 0.75;
+}
+
+/* ── 页面/tab 切换淡入 ── */
+@keyframes cr-page-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cr-page-enter {
+  animation: cr-page-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── Find 步骤卡片进场 ── */
+@keyframes cr-step-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+.cr-step-enter {
+  animation: cr-step-enter 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ── 乘车/请求卡片点击反馈（已有 hover，补 active） ── */
+.cr-ride-card:active {
+  transform: scale(0.985);
+  opacity: 0.88;
+}
+
+/* reduced-motion：新增动画全部关闭 */
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none !important; }
+  .cr-nav-item { transition: none !important; }
+  .cr-page-enter,
+  .cr-step-enter { animation: none !important; }
+  .cr-ride-card:active { transform: none; opacity: 1; }
+}
+
 /* 统一：勾选框为圆环 + 选中时实心圆 + 内点（非系统方框） */
 input.cr-checkbox[type="checkbox"] {
   appearance: none;

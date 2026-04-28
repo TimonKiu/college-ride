@@ -2,7 +2,7 @@
 export const AUTH_STRINGS = {
   zh: {
     title: "CollegeRide",
-    subtitle: "请使用美国高等院校 .edu 邮箱（例如 @jhu.edu）登录或注册。",
+    subtitle: "更便宜，更安全，和同校同学一起上学。",
     tab_login: "登录",
     tab_register: "注册",
     email: "邮箱",
@@ -34,7 +34,7 @@ export const AUTH_STRINGS = {
   },
   en: {
     title: "CollegeRide",
-    subtitle: "Sign in or register with a U.S. .edu school email (e.g. @jhu.edu).",
+    subtitle: "Cheaper, safer, ride with classmates.",
     tab_login: "Sign In",
     tab_register: "Register",
     email: "Email",

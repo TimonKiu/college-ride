@@ -1,14 +1,14 @@
 import { supabase, isSupabaseConfigured } from "../supabase/client.js";
 
-const TABLE = "published_rides";
+const TABLE = "passenger_requests";
 
-export function publishedRideRowToUi(row) {
+export function passengerRequestRowToUi(row) {
   if (!row) return null;
   const createdAt = row.created_at ? new Date(row.created_at).getTime() : Date.now();
   return {
     id: row.id,
-    driverId: row.driver_id,
-    driver: row.driver_name || "Driver",
+    riderId: row.rider_id,
+    rider: row.rider_name || "Rider",
     school: row.school || "",
     from: row.from_label,
     to: row.to_label,
@@ -16,29 +16,27 @@ export function publishedRideRowToUi(row) {
     fromLng: row.from_lng != null ? Number(row.from_lng) : null,
     toLat: row.to_lat != null ? Number(row.to_lat) : null,
     toLng: row.to_lng != null ? Number(row.to_lng) : null,
-    time: row.depart_time || "—",
-    seats: row.seats ?? 2,
-    detour: row.detour || "+10 min",
-    price: row.price != null ? Number(row.price) : 8.5,
-    rating: row.rating != null ? Number(row.rating) : 5,
+    time: row.time_pref || "—",
+    detour: row.detour || "+15 min",
+    earn: row.earn_display || "+$10.00",
     createdAt,
   };
 }
 
-export async function fetchPublishedRides() {
+export async function fetchPassengerRequests() {
   if (!isSupabaseConfigured || !supabase) {
     return { data: [], error: null };
   }
   const { data, error } = await supabase.from(TABLE).select("*").order("created_at", { ascending: false });
   if (error) {
-    console.warn("fetchPublishedRides", error.message);
+    console.warn("fetchPassengerRequests", error.message);
     return { data: [], error };
   }
-  return { data: (data || []).map(publishedRideRowToUi).filter(Boolean), error: null };
+  return { data: (data || []).map(passengerRequestRowToUi).filter(Boolean), error: null };
 }
 
-/** 当前用户作为司机发布的行程（记录页） */
-export async function fetchMyPublishedRides() {
+/** 当前用户发出的乘车请求（记录页） */
+export async function fetchMyPassengerRequests() {
   if (!isSupabaseConfigured || !supabase) {
     return { data: [], error: null };
   }
@@ -50,18 +48,18 @@ export async function fetchMyPublishedRides() {
   const { data, error } = await supabase
     .from(TABLE)
     .select("*")
-    .eq("driver_id", uid)
+    .eq("rider_id", uid)
     .order("created_at", { ascending: false });
   if (error) {
-    console.warn("fetchMyPublishedRides", error.message);
+    console.warn("fetchMyPassengerRequests", error.message);
     return { data: [], error };
   }
-  return { data: (data || []).map(publishedRideRowToUi).filter(Boolean), error: null };
+  return { data: (data || []).map(passengerRequestRowToUi).filter(Boolean), error: null };
 }
 
 /**
  * @param {object} p
- * @param {string} p.driverName
+ * @param {string} p.riderName
  * @param {string} p.school
  * @param {string} p.from
  * @param {string} p.to
@@ -69,12 +67,11 @@ export async function fetchMyPublishedRides() {
  * @param {number} p.fromLng
  * @param {number} p.toLat
  * @param {number} p.toLng
- * @param {string} p.departTime
- * @param {number} p.seats
- * @param {number} [p.price]
- * @param {string} [p.detour]
+ * @param {string} p.timePref
+ * @param {string} [p.notes]
+ * @param {string} [p.earnDisplay]
  */
-export async function insertPublishedRide(p) {
+export async function insertPassengerRequest(p) {
   if (!isSupabaseConfigured || !supabase) {
     return { data: null, error: new Error("SUPABASE_NOT_CONFIGURED") };
   }
@@ -84,8 +81,8 @@ export async function insertPublishedRide(p) {
   }
   const uid = userData.user.id;
   const row = {
-    driver_id: uid,
-    driver_name: p.driverName,
+    rider_id: uid,
+    rider_name: p.riderName,
     school: p.school || "",
     from_label: p.from,
     to_label: p.to,
@@ -93,19 +90,18 @@ export async function insertPublishedRide(p) {
     from_lng: p.fromLng,
     to_lat: p.toLat,
     to_lng: p.toLng,
-    depart_time: p.departTime,
-    seats: p.seats,
-    price: p.price ?? 8.5,
-    detour: p.detour ?? "+10 min",
-    rating: 5,
+    time_pref: p.timePref,
+    notes: p.notes || "",
+    detour: "+15 min",
+    earn_display: p.earnDisplay ?? "+$8.00",
   };
   const { data, error } = await supabase.from(TABLE).insert(row).select("*").single();
   if (error) return { data: null, error };
-  return { data: publishedRideRowToUi(data), error: null };
+  return { data: passengerRequestRowToUi(data), error: null };
 }
 
-/** 删除当前用户发布的行程（RLS：仅本人） */
-export async function deletePublishedRide(id) {
+/** 删除当前用户发出的乘车请求（RLS：仅本人） */
+export async function deletePassengerRequest(id) {
   if (!isSupabaseConfigured || !supabase) {
     return { error: new Error("SUPABASE_NOT_CONFIGURED") };
   }

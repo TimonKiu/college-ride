@@ -1,40 +1,12 @@
-/**
- * 按登录用户 localStorage 持久化的行程账本（预览 / 本地账号与 Supabase 均用 user.id 作为键）
- *
- * 碳排放（拼车减碳，保守估算）：
- * - 基准：乘用车约 0.21 kg CO₂ / km（汽油车典型量级，可日后按车型/电耗替换）
- * - 若 n 人共乘一车，相对「每人各开一车」少 (n−1) 辆车·同样里程 的排放：
- *   saved_kg = D(km) × 0.21 × (n − 1)，n≥2；单人一车记 0
- *
- * 「节省金额」相对网约车粗估：benchmark = D × $0.85/km，savings = max(0, benchmark − 实付车费)
- */
+import {
+  haversineKm,
+  co2SavedCarpoolKg,
+  savingsVsRideshareBenchmarkUsd,
+} from "./utils/fareCalculator.js";
+
+export { haversineKm, co2SavedCarpoolKg };
 
 const STORAGE_PREFIX = "cr-user-ledger-v1";
-
-export function haversineKm(lat1, lng1, lat2, lng2) {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-const KG_CO2_PER_KM_CAR = 0.21;
-const RIDESHARE_BENCHMARK_USD_PER_KM = 0.85;
-
-/** 拼车减碳：相对每人单车，少 (n−1) 份同里程尾气 */
-export function co2SavedCarpoolKg(distanceKm, occupancy) {
-  const n = Math.floor(Math.max(1, occupancy));
-  if (n < 2 || !Number.isFinite(distanceKm) || distanceKm <= 0) return 0;
-  return distanceKm * KG_CO2_PER_KM_CAR * (n - 1);
-}
-
-function savingsVsRideshareBenchmarkUsd(distanceKm, paidUsd) {
-  const bench = distanceKm * RIDESHARE_BENCHMARK_USD_PER_KM;
-  return Math.max(0, bench - paidUsd);
-}
 
 export function emptyLedger() {
   return {
@@ -200,13 +172,4 @@ export function monthlyPassengerSavingsPct(trips, now = new Date()) {
   return Math.round((s / denom) * 100);
 }
 
-export function formatUsd(n) {
-  const x = Number(n) || 0;
-  return `$${x.toFixed(2)}`;
-}
-
-export function formatCarbonKg(n) {
-  const x = Number(n) || 0;
-  if (x < 0.01) return "0 kg";
-  return `${x < 10 ? x.toFixed(2) : x.toFixed(1)} kg`;
-}
+export { formatUsd, formatCarbonKg } from "./utils/fareCalculator.js";

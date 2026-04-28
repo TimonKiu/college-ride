@@ -1,5 +1,11 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
+import { AppContext } from "./context/AppContext.jsx";
+import FindPage from "./pages/FindPage.jsx";
+import SavedPage from "./pages/SavedPage.jsx";
+import HistoryPage from "./pages/HistoryPage.jsx";
+import ProfilePage from "./pages/ProfilePage.jsx";
 import Map, { Marker, Source, Layer } from "react-map-gl/maplibre";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -7,7 +13,9 @@ import "./map.css";
 import { COLLEGE_VECTOR_MAP_STYLE, applyCollegeRoadHierarchy } from "./collegeRoadMapStyle.js";
 import { useAuth } from "./auth/AuthContext.jsx";
 import { isSupabaseConfigured } from "./supabase/client.js";
-import { fetchPublishedRides, insertPublishedRide } from "./api/publishedRides.js";
+import { fetchPublishedRides, fetchMyPublishedRides, insertPublishedRide, deletePublishedRide } from "./api/publishedRides.js";
+import { fetchPassengerRequests, fetchMyPassengerRequests, insertPassengerRequest, deletePassengerRequest } from "./api/passengerRequests.js";
+import { fetchMyBookings, insertBooking, deleteBooking } from "./api/bookings.js";
 import {
   emptyLedger,
   loadUserLedger,
@@ -35,6 +43,24 @@ function formatHistoryTripDate(ts, lang) {
   if (trip.getFullYear() !== today.getFullYear()) opts.year = "numeric";
   return trip.toLocaleDateString("en-US", opts);
 }
+
+/** 云端行程暂无独立状态字段时，用语义与时间偏好推断右下角状态 */
+function inferPlatformStatusKey(kind, timePref) {
+  const tp = (timePref || "").trim();
+  if (/明天|后天|周[一二三四五六日天]|星期|tomorrow|the day after|\bmonday\b|\btuesday\b|\bwednesday\b|\bthursday\b|\bfriday\b|\bsaturday\b|\bsunday\b/i.test(tp)) {
+    return "scheduled";
+  }
+  if (kind === "passenger_request") return "matching";
+  return "in_progress";
+}
+
+const PLATFORM_STATUS_I18N = {
+  scheduled: "history_status_scheduled",
+  in_progress: "history_status_in_progress",
+  matching: "history_status_matching",
+};
+
+const HISTORY_LEDGER_PREVIEW_MAX = 2;
 
 function UserLocationMarker({ lat, lng }) {
   if (lat == null || lng == null) return null;
@@ -112,15 +138,21 @@ function loadCommonRoutesFromStorage() {
       if (arr?.length) localStorage.setItem(COMMON_ROUTES_STORAGE_KEY, JSON.stringify(arr));
     }
     if (!arr) return [];
-    return arr.filter(
-      (t) =>
-        t &&
-        typeof t.id === "string" &&
-        typeof t.name === "string" &&
-        typeof t.toLabel === "string" &&
-        typeof t.toLat === "number" &&
-        typeof t.toLng === "number"
-    );
+    return arr
+      .map((raw) => {
+        if (!raw || typeof raw.id !== "string" || typeof raw.name !== "string" || typeof raw.toLabel !== "string") {
+          return null;
+        }
+        const toLat = Number(raw.toLat);
+        const toLng = Number(raw.toLng);
+        if (!Number.isFinite(toLat) || !Number.isFinite(toLng)) return null;
+        let fromLat = raw.fromLat != null ? Number(raw.fromLat) : null;
+        let fromLng = raw.fromLng != null ? Number(raw.fromLng) : null;
+        if (fromLat != null && !Number.isFinite(fromLat)) fromLat = null;
+        if (fromLng != null && !Number.isFinite(fromLng)) fromLng = null;
+        return { ...raw, toLat, toLng, fromLat, fromLng };
+      })
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -254,6 +286,24 @@ function getCommonRouteTimeFields(trip) {
   };
 }
 
+/** 常用路线与一周安排条目：统一解析出发/返程时间字段 */
+function resolveTripTimeFields(trip) {
+  if (typeof trip.minutes === "number" && !Number.isNaN(trip.minutes)) {
+    const m = Math.max(0, Math.min(24 * 60 - 1, trip.minutes));
+    const retOn = trip.returnEnabled === true && typeof trip.returnMinutes === "number" && !Number.isNaN(trip.returnMinutes);
+    const rm = retOn ? Math.max(0, Math.min(24 * 60 - 1, trip.returnMinutes)) : 0;
+    return {
+      timeEnabled: true,
+      outHour: Math.floor(m / 60) % 24,
+      outMinute: m % 60,
+      returnEnabled: retOn,
+      returnHour: retOn ? Math.floor(rm / 60) % 24 : 18,
+      returnMinute: retOn ? rm % 60 : 0,
+    };
+  }
+  return getCommonRouteTimeFields(trip);
+}
+
 const DC_AREA_POINTS = {
   "Foggy Bottom": [38.9009, -77.0507],
   "Capitol Hill": [38.8899, -77.0091],
@@ -348,6 +398,35 @@ async function geocodePhotonFirst(query, bias = {}) {
   return null;
 }
 
+/** 反向地理编码：坐标 → 简短可读地址（Nominatim） */
+async function reverseGeocode(lat, lng) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=17&addressdetails=1`;
+    const res = await fetch(url, { headers: { "Accept-Language": "zh,en" } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const a = data?.address ?? {};
+    // 优先取楼号+街道，或者景点/建筑名
+    const building = a.amenity || a.building || a.tourism || a.leisure || a.shop || a.office;
+    const road = a.road || a.pedestrian || a.footway || a.path;
+    const houseNumber = a.house_number;
+    const city = a.city || a.town || a.village || a.county;
+    const state = a.state;
+    if (building && road) return `${building}, ${road}`;
+    if (building && city) return `${building}, ${city}`;
+    if (houseNumber && road) return `${houseNumber} ${road}`;
+    if (road && city) return `${road}, ${city}`;
+    if (data.display_name) {
+      // 取前两段
+      const parts = data.display_name.split(",").map((s) => s.trim()).filter(Boolean);
+      return parts.slice(0, 2).join(", ");
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function nearestPlaceName(lat, lng) {
   let best = null;
   let bestD = Infinity;
@@ -372,6 +451,29 @@ function approxKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+const ROUTE_MATCH_MAX_KM = 35;
+
+/** 与常用路线起终点都接近的乘客请求（用于司机选用路线后的列表） */
+function filterRequestsForSavedTrip(requests, trip, currentLocationCoords, activeCampus) {
+  if (!trip || typeof trip.toLat !== "number" || typeof trip.toLng !== "number") return requests;
+  let tFromLat = trip.fromLat;
+  let tFromLng = trip.fromLng;
+  if (trip.fromUseCurrentLocation) {
+    tFromLat = currentLocationCoords?.lat ?? activeCampus.lat;
+    tFromLng = currentLocationCoords?.lng ?? activeCampus.lng;
+  }
+  if (typeof tFromLat !== "number" || typeof tFromLng !== "number") return requests;
+  const tToLat = trip.toLat;
+  const tToLng = trip.toLng;
+  return requests.filter((r) => {
+    if (typeof r.fromLat !== "number" || typeof r.fromLng !== "number") return false;
+    const d1 = approxKm(r.fromLat, r.fromLng, tFromLat, tFromLng);
+    if (typeof r.toLat !== "number" || typeof r.toLng !== "number") return d1 <= ROUTE_MATCH_MAX_KM;
+    const d2 = approxKm(r.toLat, r.toLng, tToLat, tToLng);
+    return d1 <= ROUTE_MATCH_MAX_KM && d2 <= ROUTE_MATCH_MAX_KM;
+  });
+}
+
 function getNearestBuilding(lat, lng) {
   let nearest = null;
   let nearestKm = Infinity;
@@ -384,9 +486,6 @@ function getNearestBuilding(lat, lng) {
   }
   return { nearest, nearestKm };
 }
-
-/** 乘客请求仍为空，可后续接表；拼车列表见 published_rides + fetchPublishedRides */
-const DRIVER_REQUESTS_POOL = [];
 
 const FONT_LINK = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
 
@@ -816,6 +915,38 @@ function PlaceSuggestField({
   const rowText = dark ? "#f1f5f9" : "#0a0a0a";
   const mutedText = dark ? "rgba(148,163,184,0.95)" : "#64748b";
 
+  /** 浅色默认：与「常用出发地」等按钮一致 — borderRadius 10、1px border（与 styles.input / 列表按钮统一） */
+  const lightWrapperDefaults =
+    !dark
+      ? {
+          display: "flex",
+          alignItems: "center",
+          width: "100%",
+          boxSizing: "border-box",
+          borderRadius: 10,
+          border: `1px solid ${borderColor ?? "#dce3ed"}`,
+          background: "#ffffff",
+          transition: "border-color 0.15s ease",
+        }
+      : {};
+  const lightInputDefaults =
+    !dark && !inputStyle
+      ? {
+          flex: 1,
+          minWidth: 0,
+          width: "100%",
+          padding: "12px 14px",
+          fontSize: 15,
+          fontFamily: "'Inter', system-ui, sans-serif",
+          outline: "none",
+          background: "#ffffff",
+          boxSizing: "border-box",
+          borderRadius: 10,
+          appearance: "none",
+          WebkitAppearance: "none",
+        }
+      : {};
+
   const suggestionList = (
     <>
       {loading && (
@@ -864,8 +995,8 @@ function PlaceSuggestField({
   return (
     <div
       ref={wrapRef}
-      className={`cr-input-wrap${dark ? " cr-plan-input-dark-wrap" : ""}`}
-      style={{ position: "relative", ...wrapperStyle }}
+      className={`cr-input-wrap${dark ? " cr-plan-input-dark-wrap" : " cr-input-wrap-light"}`}
+      style={{ position: "relative", ...lightWrapperDefaults, ...wrapperStyle }}
     >
       {icon}
       <input
@@ -888,10 +1019,18 @@ function PlaceSuggestField({
         placeholder={placeholder}
         className={dark ? "cr-plan-input-dark" : undefined}
         style={{
+          ...lightInputDefaults,
           ...inputStyle,
           border: "none",
           color: dark ? "#ffffff" : "#0a0a0a",
           background: dark ? "transparent" : undefined,
+          ...(!dark
+            ? {
+                borderRadius: inputStyle?.borderRadius ?? 10,
+                appearance: "none",
+                WebkitAppearance: "none",
+              }
+            : {}),
         }}
       />
       {showDropdown && !dark && (
@@ -1474,6 +1613,9 @@ const STRINGS = {
     ph_notes: "例：行李空间有限、不接受宠物",
     section_find_passengers: "找乘客",
     headline_driver_browse_passengers: "乘客请求",
+    driver_saved_route_hint:
+      "已应用常用路线。下方为与路线相近的乘客请求；若无合适订单将自动发布空车行程。您也可随时不接单并直接发布。",
+    driver_skip_publish: "不接单，发布我的路线",
     desc_carpool: "根据你在「{campus}」的位置，优先展示附近乘客请求",
     btn_accept: "接受",
     btn_accepted: "已接受",
@@ -1534,6 +1676,20 @@ const STRINGS = {
     history_monthly_label: "本月合计节省",
     history_monthly_vs: "相较网约车基准约省 {pct}%",
     history_monthly_vs_pending: "完成乘客行程后将显示节省比例",
+    history_section_my_trips: "我的行程",
+    history_empty_my_trips: "暂无进行中的行程。发布开车或发起乘车请求后会显示在这里。",
+    history_section_completed: "已完成行程",
+    history_empty_completed: "暂无已完成行程。在本应用内结束拼车后会汇总在这里。",
+    history_view_all: "查看全部",
+    history_completed_full_title: "全部已完成行程",
+    history_status_scheduled: "预约",
+    history_status_in_progress: "进行中",
+    history_status_matching: "等待匹配",
+    history_status_booked: "已预约",
+    history_status_accepted: "已接单",
+    history_delete_title: "删除行程",
+    history_delete_desc: "确定删除「{route}」吗？此操作不可撤销。",
+    history_delete_aria: "删除此行程",
     /* ── 个人资料 tab ── */
     section_account: "账户",
     headline_profile: "个人资料",
@@ -1581,6 +1737,42 @@ const STRINGS = {
     label_return_short: "返程",
     label_loading_route: "加载路线中…",
     ph_address_place: "英文/中文地址或地点名（楼、餐厅等）",
+    /* ── 乘客分步搜索流程 ── */
+    step_origin_title: "从哪里出发？",
+    step_dest_title: "要去哪里？",
+    step_time_title: "什么时候出发？",
+    btn_continue: "继续",
+    time_now: "现在出发",
+    time_in30: "30 分钟后",
+    time_in60: "1 小时后",
+    time_custom: "自定义",
+    btn_search_rides: "搜索行程",
+    label_saved_origins: "常用出发地",
+    label_saved_dests: "常用目的地",
+    label_or_search: "或输入地址",
+    /* ── 乘客发布需求 (Step 5B) ── */
+    post_request_title: "发布乘车需求",
+    post_request_desc: "发布后，沿途司机可以看到你的需求并接单。",
+    post_no_ride_btn: "找不到合适的？发布我的需求",
+    label_notes_rider: "备注（选填）",
+    ph_notes_rider: "行李情况、特殊需求等",
+    btn_post_request: "确认发布",
+    post_request_toast: "你的需求已发布，等待司机接单",
+    post_request_live: "你的需求已发布",
+    post_request_cancel: "撤销需求",
+    /* ── 司机两路入口 ── */
+    driver_path_browse: "浏览乘客需求",
+    driver_path_browse_desc: "查看附近发布了乘车需求的乘客",
+    driver_path_post: "发布我的行程",
+    driver_path_post_desc: "发布出行计划，等待乘客申请加入",
+    /* ── 行程 / 请求详情页 ── */
+    btn_confirm_ride: "确认拼车",
+    label_request_details: "乘车请求详情",
+    tag_pending: "待接单",
+    label_time_pref: "希望出发",
+    label_earn_this_trip: "本单预计收益",
+    label_earn_note: "接单后以实际绕路为准",
+    btn_accept_request: "接受订单",
     /* ── 周一～周日 ── */
     weekdays: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
   },
@@ -1642,6 +1834,9 @@ const STRINGS = {
     ph_notes: "e.g. Limited luggage space, no pets",
     section_find_passengers: "Find Passengers",
     headline_driver_browse_passengers: "Passenger requests",
+    driver_saved_route_hint:
+      "Saved route applied. Below are requests near your route. If none fit, your ride will be posted automatically. You can also publish without taking a request.",
+    driver_skip_publish: "Skip & publish my ride",
     desc_carpool: "Showing passenger requests near your location at {campus}",
     btn_accept: "Accept",
     btn_accepted: "Accepted",
@@ -1702,6 +1897,20 @@ const STRINGS = {
     history_monthly_label: "Saved this month",
     history_monthly_vs: "~{pct}% vs rideshare benchmark",
     history_monthly_vs_pending: "Complete a rider trip to see your savings rate",
+    history_section_my_trips: "My trips",
+    history_empty_my_trips: "No active trips yet. Listings and ride requests you post will appear here.",
+    history_section_completed: "Completed trips",
+    history_empty_completed: "No completed trips yet. Trips you finish in this app are listed here.",
+    history_view_all: "View all",
+    history_completed_full_title: "All completed trips",
+    history_status_scheduled: "Scheduled",
+    history_status_in_progress: "In progress",
+    history_status_matching: "Matching",
+    history_status_booked: "Booked",
+    history_status_accepted: "Accepted",
+    history_delete_title: "Delete trip",
+    history_delete_desc: "Delete \"{route}\"? This cannot be undone.",
+    history_delete_aria: "Delete this trip",
     /* ── 个人资料 tab ── */
     section_account: "Account",
     headline_profile: "Profile",
@@ -1749,6 +1958,42 @@ const STRINGS = {
     label_return_short: "Return",
     label_loading_route: "Loading route…",
     ph_address_place: "Address or place (building, restaurant, etc.)",
+    /* ── Rider step-by-step search ── */
+    step_origin_title: "Where are you leaving from?",
+    step_dest_title: "Where are you going?",
+    step_time_title: "When do you want to leave?",
+    btn_continue: "Continue",
+    time_now: "Now",
+    time_in30: "In 30 min",
+    time_in60: "In 1 hour",
+    time_custom: "Custom",
+    btn_search_rides: "Search Rides",
+    label_saved_origins: "Saved Origins",
+    label_saved_dests: "Saved Destinations",
+    label_or_search: "or search address",
+    /* ── Rider post request (Step 5B) ── */
+    post_request_title: "Post Ride Request",
+    post_request_desc: "Nearby drivers will see your request and can offer a ride.",
+    post_no_ride_btn: "Can't find one? Post my request",
+    label_notes_rider: "Notes (optional)",
+    ph_notes_rider: "Luggage, pets, special needs…",
+    btn_post_request: "Post Request",
+    post_request_toast: "Your request is live — waiting for a driver",
+    post_request_live: "Your request is live",
+    post_request_cancel: "Cancel request",
+    /* ── Driver two-path entry ── */
+    driver_path_browse: "Browse Requests",
+    driver_path_browse_desc: "See passengers near you looking for a ride",
+    driver_path_post: "Post My Trip",
+    driver_path_post_desc: "Share your trip and let passengers join you",
+    /* ── Ride / request detail pages ── */
+    btn_confirm_ride: "Confirm Ride",
+    label_request_details: "Passenger Request",
+    tag_pending: "Looking for Driver",
+    label_time_pref: "Preferred Time",
+    label_earn_this_trip: "Est. Earnings This Trip",
+    label_earn_note: "Adjusted based on actual detour after acceptance",
+    btn_accept_request: "Accept Request",
     /* ── 周一～周日 ── */
     weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
   },
@@ -1777,7 +2022,13 @@ export default function CollegeRide() {
     return raw.slice(0, 1).toUpperCase();
   })();
 
-  const [tab, setTab] = useState("find");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tab = (() => {
+    const p = location.pathname.replace(/^\//, "");
+    return ["find", "saved", "history", "profile"].includes(p) ? p : "find";
+  })();
+  const setTab = useCallback((id) => navigate("/" + id), [navigate]);
   /** 我的 tab：设置列表 vs 语言子页 */
   const [profileSettingsView, setProfileSettingsView] = useState("main");
   /** 语言全屏层关闭中：播放右滑退出后再卸载 */
@@ -1805,7 +2056,28 @@ export default function CollegeRide() {
   const [riderToCoords, setRiderToCoords] = useState(null);
   /** 出发地是否为设备定位「当前位置」 */
   const [fromUseCurrentLocation, setFromUseCurrentLocation] = useState(true);
+  /** 乘客分步搜索：当前步骤 */
+  const [riderStep, setRiderStep] = useState("origin"); // "origin" | "destination" | "time" | "results"
+  /** 乘客分步搜索：出发时间 */
+  const [riderFindTimeMode, setRiderFindTimeMode] = useState("now"); // "now" | "in30" | "in60" | "custom"
+  const [riderFindDate, setRiderFindDate] = useState(() => {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  });
+  const [riderFindHour, setRiderFindHour] = useState(() => new Date().getHours());
+  const [riderFindMinute, setRiderFindMinute] = useState(() => new Date().getMinutes());
+  const [riderFindWheelKey, setRiderFindWheelKey] = useState(0);
+  /** 乘客发布需求 (Step 5B) */
+  const [riderPostNotes, setRiderPostNotes] = useState("");
+  const [riderPosting, setRiderPosting] = useState(false);
+  const [riderPostError, setRiderPostError] = useState("");
+  const [riderPostActive, setRiderPostActive] = useState(false);
+  /* driver two-path entry: null = choose, "browse" = list, "post" = publish flow */
+  const [driverFindPath, setDriverFindPath] = useState(null);
   const [currentLocationCoords, setCurrentLocationCoords] = useState(null);
+  const [currentLocationAddress, setCurrentLocationAddress] = useState(null);
+  /** 当前位置的显示标签：已解析则显示真实地址，否则显示通用文案 */
+  const currentLocationLabel = currentLocationAddress ?? t("label_current_location");
   /** Uber 式全屏规划层 */
   const [planTripOpen, setPlanTripOpen] = useState(false);
   const [planTripFocus, setPlanTripFocus] = useState("to");
@@ -1818,6 +2090,18 @@ export default function CollegeRide() {
   const [publishedRides, setPublishedRides] = useState([]);
   const [publishSubmitting, setPublishSubmitting] = useState(false);
   const [publishFormError, setPublishFormError] = useState("");
+  /** 司机从常用路线进入：{ trip, token }，先展示匹配乘客请求，无匹配则自动发布 */
+  const [driverPendingSavedRoute, setDriverPendingSavedRoute] = useState(null);
+  const driverAutoPublishTokenRef = useRef(null);
+  const [passengerRequests, setPassengerRequests] = useState([]);
+  const [passengerRequestsHydrated, setPassengerRequestsHydrated] = useState(false);
+  const [myPublishedRides, setMyPublishedRides] = useState([]);
+  const [myPassengerRequests, setMyPassengerRequests] = useState([]);
+  const [myBookings, setMyBookings] = useState([]);
+  const [historyCompletedFullOpen, setHistoryCompletedFullOpen] = useState(false);
+  /** 记录页：删除云端行程确认 { kind, id, routeLabel } */
+  const [historyPlatformDelete, setHistoryPlatformDelete] = useState(null);
+  const [historyPlatformDeleting, setHistoryPlatformDeleting] = useState(false);
   const [driverPublishToast, setDriverPublishToast] = useState("");
   const [driverPublishModalOpen, setDriverPublishModalOpen] = useState(false);
   const [driverPublishModalClosing, setDriverPublishModalClosing] = useState(false);
@@ -1903,6 +2187,25 @@ export default function CollegeRide() {
   useEffect(() => {
     if (role === "rider" && tab === "post") setTab("find");
   }, [role, tab]);
+
+  useEffect(() => {
+    if (role === "rider") {
+      setRiderStep("origin");
+      setRiderTo("");
+      setRiderToCoords(null);
+      setFromUseCurrentLocation(true);
+      setRiderFrom("");
+      setRiderFromCoords(null);
+      setRiderFindTimeMode("now");
+      setRiderPostActive(false);
+      setRiderPostNotes("");
+      setRiderPostError("");
+      setCurrentLocationAddress(null);
+    } else if (role === "driver") {
+      setDriverFindPath(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role]);
 
   useEffect(() => {
     if (tab !== "profile") {
@@ -2043,8 +2346,61 @@ export default function CollegeRide() {
   const monthlySavingsDisplay = useMemo(() => monthlyPassengerSavingsUsd(ledger.trips), [ledger.trips]);
   const monthlySavingsPctValue = useMemo(() => monthlyPassengerSavingsPct(ledger.trips), [ledger.trips]);
 
+  const myPlatformHistoryItems = useMemo(() => {
+    const rows = [];
+    for (const ride of myPublishedRides) {
+      rows.push({ kind: "driver_publish", key: `d-${ride.id}`, createdAt: ride.createdAt, ride });
+    }
+    for (const req of myPassengerRequests) {
+      rows.push({ kind: "passenger_request", key: `p-${req.id}`, createdAt: req.createdAt, req });
+    }
+    for (const b of myBookings) {
+      const kind = b.driverId === userId ? "booking_driver" : "booking_passenger";
+      rows.push({ kind, key: `b-${b.id}`, createdAt: b.createdAt, booking: b });
+    }
+    rows.sort((a, b) => b.createdAt - a.createdAt);
+    return rows;
+  }, [myPublishedRides, myPassengerRequests, myBookings, userId]);
+
+  const confirmDeleteHistoryPlatform = useCallback(async () => {
+    const target = historyPlatformDelete;
+    if (!target) return;
+    if (!isSupabaseConfigured) {
+      setDriverPublishToast(lang === "zh" ? "未配置云端，无法删除。" : "Supabase not configured; cannot delete.");
+      window.setTimeout(() => setDriverPublishToast(""), 3200);
+      setHistoryPlatformDelete(null);
+      return;
+    }
+    setHistoryPlatformDeleting(true);
+    try {
+      const { kind, id } = target;
+      let deleteErr;
+      if (kind === "driver_publish") {
+        ({ error: deleteErr } = await deletePublishedRide(id));
+      } else if (kind === "passenger_request") {
+        ({ error: deleteErr } = await deletePassengerRequest(id));
+      } else {
+        ({ error: deleteErr } = await deleteBooking(id));
+      }
+      if (deleteErr) {
+        const msg = deleteErr.message || (lang === "zh" ? "删除失败，请重试。" : "Could not delete. Try again.");
+        setDriverPublishToast(msg);
+        window.setTimeout(() => setDriverPublishToast(""), 4000);
+        return;
+      }
+      setPublishedRides((prev) => prev.filter((r) => r.id !== id));
+      setPassengerRequests((prev) => prev.filter((r) => r.id !== id));
+      setMyPublishedRides((prev) => prev.filter((r) => r.id !== id));
+      setMyPassengerRequests((prev) => prev.filter((r) => r.id !== id));
+      setMyBookings((prev) => prev.filter((b) => b.id !== id));
+      setHistoryPlatformDelete(null);
+    } finally {
+      setHistoryPlatformDeleting(false);
+    }
+  }, [historyPlatformDelete, lang]);
+
   const commitPassengerBooking = useCallback(
-    (ride) => {
+    async (ride) => {
       if (!ride) return;
       setLedger((prev) => {
         const next = appendPassengerTrip(prev, {
@@ -2061,12 +2417,55 @@ export default function CollegeRide() {
         if (userId) persistUserLedger(userId, next);
         return next;
       });
+      const passengerName = user?.displayName?.trim() || user?.email?.split("@")[0] || (lang === "zh" ? "乘客" : "Rider");
+      const localBooking = {
+        id: `local-${Date.now()}`,
+        passengerId: userId,
+        driverId: ride.driverId,
+        rideId: ride.id,
+        requestId: null,
+        passengerName,
+        driverName: ride.driver,
+        from: ride.from,
+        to: ride.to,
+        fromLat: ride.fromLat,
+        fromLng: ride.fromLng,
+        toLat: ride.toLat,
+        toLng: ride.toLng,
+        time: ride.time,
+        price: Number(ride.price) || 0,
+        status: "active",
+        createdAt: Date.now(),
+      };
+      setMyBookings((prev) => [localBooking, ...prev]);
+      if (isSupabaseConfigured && userId) {
+        const { data, error } = await insertBooking({
+          passengerId: userId,
+          driverId: ride.driverId,
+          rideId: String(ride.id).startsWith("local-") ? null : ride.id,
+          requestId: null,
+          passengerName,
+          driverName: ride.driver,
+          from: ride.from,
+          to: ride.to,
+          fromLat: ride.fromLat,
+          fromLng: ride.fromLng,
+          toLat: ride.toLat,
+          toLng: ride.toLng,
+          time: ride.time,
+          price: Number(ride.price) || 0,
+        });
+        if (!error && data) {
+          setMyBookings((prev) => prev.map((b) => (b.id === localBooking.id ? data : b)));
+        }
+      }
     },
-    [userId]
+    [userId, user, lang]
   );
 
   const commitDriverBooking = useCallback(
-    (req) => {
+    async (req) => {
+      setDriverPendingSavedRoute(null);
       if (!req) return;
       const gross = parseUsdFromEarn(req.earn);
       const incomeUsd = gross * 0.82;
@@ -2085,9 +2484,285 @@ export default function CollegeRide() {
         if (userId) persistUserLedger(userId, next);
         return next;
       });
+      const driverName = user?.displayName?.trim() || user?.email?.split("@")[0] || (lang === "zh" ? "司机" : "Driver");
+      const localBooking = {
+        id: `local-${Date.now()}`,
+        passengerId: req.riderId,
+        driverId: userId,
+        rideId: null,
+        requestId: req.id,
+        passengerName: req.rider,
+        driverName,
+        from: req.from,
+        to: req.to,
+        fromLat: req.fromLat,
+        fromLng: req.fromLng,
+        toLat: req.toLat,
+        toLng: req.toLng,
+        time: req.time,
+        price: gross,
+        status: "active",
+        createdAt: Date.now(),
+      };
+      setMyBookings((prev) => [localBooking, ...prev]);
+      if (isSupabaseConfigured && userId) {
+        const { data, error } = await insertBooking({
+          passengerId: req.riderId,
+          driverId: userId,
+          rideId: null,
+          requestId: String(req.id).startsWith("local-") ? null : req.id,
+          passengerName: req.rider,
+          driverName,
+          from: req.from,
+          to: req.to,
+          fromLat: req.fromLat,
+          fromLng: req.fromLng,
+          toLat: req.toLat,
+          toLng: req.toLng,
+          time: req.time,
+          price: gross,
+        });
+        if (!error && data) {
+          setMyBookings((prev) => prev.map((b) => (b.id === localBooking.id ? data : b)));
+        }
+      }
     },
-    [userId]
+    [userId, user, lang]
   );
+
+  const commitPublishDriverRide = useCallback(
+    async ({ closeModal } = {}) => {
+      setPublishFormError("");
+      const fromT = publishFrom.trim();
+      const toT = publishTo.trim();
+      const timeT = publishDepartTime.trim();
+      if (!fromT || !toT || !timeT) {
+        if (closeModal) {
+          setPublishFormError(
+            lang === "zh" ? "请填写出发地、目的地和出发时间。" : "Fill in origin, destination, and departure time."
+          );
+        }
+        return { ok: false };
+      }
+      if (!isSupabaseConfigured) {
+        if (closeModal) {
+          setPublishFormError(
+            lang === "zh" ? "未配置云端（VITE_SUPABASE_*），无法发布。" : "Supabase env vars missing; cannot publish."
+          );
+        } else {
+          setDriverPublishToast(lang === "zh" ? "未配置云端，无法发布" : "Configure Supabase to publish");
+          window.setTimeout(() => setDriverPublishToast(""), 3200);
+        }
+        setDriverPendingSavedRoute(null);
+        return { ok: false };
+      }
+      setPublishSubmitting(true);
+      try {
+        const bias = { lat: activeCampus.lat, lon: activeCampus.lng };
+        let fromCoords =
+          publishFromLat != null && publishFromLng != null
+            ? { lat: publishFromLat, lng: publishFromLng }
+            : await geocodePhotonFirst(fromT, bias);
+        const toCoords = await geocodePhotonFirst(toT, bias);
+        if (!fromCoords || !toCoords) {
+          const msg =
+            lang === "zh" ? "无法解析地址，请写得更具体或稍后再试。" : "Could not geocode addresses. Try a more specific place.";
+          if (closeModal) setPublishFormError(msg);
+          else {
+            setDriverPublishToast(msg);
+            window.setTimeout(() => setDriverPublishToast(""), 4000);
+          }
+          return { ok: false };
+        }
+        const driverName = user?.displayName?.trim() || user?.email?.split("@")[0] || "Driver";
+        const localRide = {
+          id: `local-${Date.now()}`,
+          driverId: user?.id ?? "local",
+          driver: driverName,
+          school: user?.school || "",
+          from: fromT,
+          to: toT,
+          fromLat: fromCoords.lat,
+          fromLng: fromCoords.lng,
+          toLat: toCoords.lat,
+          toLng: toCoords.lng,
+          time: timeT,
+          seats: postSeats,
+          price: 8.5,
+          detour: "+10 min",
+          rating: 5,
+          createdAt: Date.now(),
+        };
+        const { error } = await insertPublishedRide({
+          driverName,
+          school: user?.school || "",
+          from: fromT,
+          to: toT,
+          fromLat: fromCoords.lat,
+          fromLng: fromCoords.lng,
+          toLat: toCoords.lat,
+          toLng: toCoords.lng,
+          departTime: timeT,
+          seats: postSeats,
+          price: 8.5,
+          detour: "+10 min",
+        });
+        if (error) {
+          if (error.message === "NOT_SIGNED_IN") {
+            const msg = lang === "zh" ? "请先登录。" : "Sign in required.";
+            if (closeModal) setPublishFormError(msg);
+            else { setDriverPublishToast(msg); window.setTimeout(() => setDriverPublishToast(""), 4000); }
+            return { ok: false };
+          }
+          const isBackendIssue =
+            error.message?.includes("schema cache") ||
+            error.message?.includes("not found") ||
+            error.message?.includes("42P01") ||
+            error.code === "42P01";
+          if (isBackendIssue) {
+            setPublishedRides((prev) => [localRide, ...prev]);
+            setMyPublishedRides((prev) => [localRide, ...prev]);
+            setDriverPendingSavedRoute(null);
+            driverAutoPublishTokenRef.current = null;
+            setDriverPublishToast(t("publish_toast"));
+            window.setTimeout(() => setDriverPublishToast(""), 2800);
+            if (closeModal) beginCloseDriverPublishModal();
+            setPublishFrom(""); setPublishTo(""); setPublishDepartTime("");
+            setPublishFromLat(null); setPublishFromLng(null);
+            return { ok: true };
+          }
+          const msg = lang === "zh" ? "发布失败，请稍后再试" : "Publish failed, please try again";
+          if (closeModal) setPublishFormError(msg);
+          else { setDriverPublishToast(msg); window.setTimeout(() => setDriverPublishToast(""), 4000); }
+          return { ok: false };
+        }
+        const { data: refreshed } = await fetchPublishedRides();
+        setPublishedRides(refreshed);
+        const { data: myPub } = await fetchMyPublishedRides();
+        setMyPublishedRides(myPub ?? [localRide]);
+        setDriverPendingSavedRoute(null);
+        driverAutoPublishTokenRef.current = null;
+        setDriverPublishToast(t("publish_toast"));
+        window.setTimeout(() => setDriverPublishToast(""), 2800);
+        if (closeModal) beginCloseDriverPublishModal();
+        setPublishFrom("");
+        setPublishTo("");
+        setPublishDepartTime("");
+        setPublishFromLat(null);
+        setPublishFromLng(null);
+        return { ok: true };
+      } finally {
+        setPublishSubmitting(false);
+      }
+    },
+    [
+      publishFrom,
+      publishTo,
+      publishDepartTime,
+      publishFromLat,
+      publishFromLng,
+      postSeats,
+      lang,
+      jhuLocationId,
+      user,
+      t,
+      beginCloseDriverPublishModal,
+    ]
+  );
+
+  const activeCampus = useMemo(() => JHU_LOCATIONS.find((l) => l.id === jhuLocationId) ?? JHU_LOCATIONS[0], [jhuLocationId]);
+
+  /** 乘客：提交发布乘车需求 */
+  const commitRiderPost = useCallback(async () => {
+    setRiderPosting(true);
+    setRiderPostError("");
+    try {
+      const fromLabel = fromUseCurrentLocation
+        ? currentLocationLabel
+        : riderFrom.trim();
+      const fromLat = fromUseCurrentLocation
+        ? (currentLocationCoords?.lat ?? activeCampus.lat)
+        : riderFromCoords?.lat;
+      const fromLng = fromUseCurrentLocation
+        ? (currentLocationCoords?.lng ?? activeCampus.lng)
+        : riderFromCoords?.lng;
+      const timePref =
+        riderFindTimeMode === "now"
+          ? t("time_now")
+          : formatScheduleChipLabel(riderFindDate, riderFindHour, riderFindMinute);
+
+      const localEntry = {
+        id: `local-${Date.now()}`,
+        rider: user?.displayName?.trim() || user?.email?.split("@")[0] || (lang === "zh" ? "乘客" : "Rider"),
+        school: user?.school || schoolDisplay,
+        from: fromLabel,
+        to: riderTo.trim(),
+        fromLat,
+        fromLng,
+        toLat: riderToCoords?.lat ?? activeCampus.lat,
+        toLng: riderToCoords?.lng ?? activeCampus.lng,
+        time: timePref,
+        detour: "+15 min",
+        earn: "+$8.00",
+        createdAt: Date.now(),
+      };
+
+      if (!isSupabaseConfigured) {
+        setPassengerRequests((prev) => [localEntry, ...prev]);
+        setMyPassengerRequests((prev) => [localEntry, ...prev]);
+        setRiderPostActive(true);
+        setRiderStep("results");
+        return;
+      }
+
+      const { error } = await insertPassengerRequest({
+        riderName: localEntry.rider,
+        school: localEntry.school,
+        from: fromLabel,
+        to: riderTo.trim(),
+        fromLat,
+        fromLng,
+        toLat: localEntry.toLat,
+        toLng: localEntry.toLng,
+        timePref,
+        notes: riderPostNotes.trim(),
+        earnDisplay: localEntry.earn,
+      });
+      if (error) {
+        if (error.message === "NOT_SIGNED_IN") {
+          setRiderPostError(lang === "zh" ? "请先登录" : "Sign in required");
+          return;
+        }
+        // Table missing or Supabase unavailable — fall back to local state
+        const isBackendIssue =
+          error.message?.includes("schema cache") ||
+          error.message?.includes("not found") ||
+          error.message?.includes("42P01") ||
+          error.code === "42P01";
+        if (isBackendIssue) {
+          setPassengerRequests((prev) => [localEntry, ...prev]);
+          setMyPassengerRequests((prev) => [localEntry, ...prev]);
+          setRiderPostActive(true);
+          setRiderStep("results");
+          return;
+        }
+        setRiderPostError(lang === "zh" ? "提交失败，请稍后再试" : "Submission failed, please try again");
+        return;
+      }
+      const { data: refreshed } = await fetchPassengerRequests();
+      const { data: myRefreshed } = await fetchMyPassengerRequests();
+      setPassengerRequests(refreshed ?? [localEntry]);
+      setMyPassengerRequests(myRefreshed ?? [localEntry]);
+      setRiderPostActive(true);
+      setRiderStep("results");
+    } finally {
+      setRiderPosting(false);
+    }
+  }, [
+    fromUseCurrentLocation, riderFrom, currentLocationCoords, activeCampus,
+    riderFromCoords, riderFindTimeMode, riderFindDate, riderFindHour, riderFindMinute,
+    riderTo, riderToCoords, riderPostNotes, user, schoolDisplay, lang, t,
+  ]);
 
   useEffect(() => {
     if (role === "driver" && tab === "post") setTab("find");
@@ -2096,17 +2771,60 @@ export default function CollegeRide() {
   useEffect(() => {
     if (!user?.id) {
       setPublishedRides([]);
+      setPassengerRequests([]);
+      setPassengerRequestsHydrated(false);
+      setMyPublishedRides([]);
+      setMyPassengerRequests([]);
+      setMyBookings([]);
       return;
     }
     let cancelled = false;
     (async () => {
-      const { data } = await fetchPublishedRides();
-      if (!cancelled) setPublishedRides(data);
+      const [ridesRes, reqRes, myPub, myReq, myBook] = await Promise.all([
+        fetchPublishedRides(),
+        fetchPassengerRequests(),
+        fetchMyPublishedRides(),
+        fetchMyPassengerRequests(),
+        fetchMyBookings(),
+      ]);
+      if (cancelled) return;
+      setPublishedRides(ridesRes.data);
+      setPassengerRequests(reqRes.data);
+      setMyPublishedRides(myPub.data);
+      setMyPassengerRequests(myReq.data);
+      setMyBookings(myBook.data);
+      setPassengerRequestsHydrated(true);
     })();
     return () => {
       cancelled = true;
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || tab !== "history") return;
+    let cancelled = false;
+    (async () => {
+      const [myPub, myReq, myBook] = await Promise.all([
+        fetchMyPublishedRides(),
+        fetchMyPassengerRequests(),
+        fetchMyBookings(),
+      ]);
+      if (cancelled) return;
+      setMyPublishedRides(myPub.data);
+      setMyPassengerRequests(myReq.data);
+      setMyBookings(myBook.data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, user?.id]);
+
+  useEffect(() => {
+    if (tab !== "history") {
+      setHistoryCompletedFullOpen(false);
+      setHistoryPlatformDelete(null);
+    }
+  }, [tab]);
 
   useEffect(() => {
     persistCommonRoutes(commonRoutes);
@@ -2288,8 +3006,6 @@ export default function CollegeRide() {
     );
   }, []);
 
-  const activeCampus = useMemo(() => JHU_LOCATIONS.find((l) => l.id === jhuLocationId) ?? JHU_LOCATIONS[0], [jhuLocationId]);
-
   /** 相对当前参考位置（设备定位或默认校区）的教学楼，近 → 远 */
   const originCampusesByDistance = useMemo(() => {
     const ref = currentLocationCoords ?? { lat: activeCampus.lat, lng: activeCampus.lng };
@@ -2352,25 +3068,35 @@ export default function CollegeRide() {
 
   const snapOriginToCurrentLocation = useCallback(() => {
     setOriginPickedFromBuilding(false);
+    setCurrentLocationAddress(null);
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng });
+      const lat = activeCampus.lat;
+      const lng = activeCampus.lng;
+      setCurrentLocationCoords({ lat, lng });
       setFromUseCurrentLocation(true);
       setRiderFrom("");
       setRiderFromCoords(null);
+      reverseGeocode(lat, lng).then((addr) => { if (addr) setCurrentLocationAddress(addr); });
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setCurrentLocationCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        setCurrentLocationCoords({ lat, lng });
         setFromUseCurrentLocation(true);
         setRiderFrom("");
         setRiderFromCoords(null);
+        reverseGeocode(lat, lng).then((addr) => { if (addr) setCurrentLocationAddress(addr); });
       },
       () => {
-        setCurrentLocationCoords({ lat: activeCampus.lat, lng: activeCampus.lng });
+        const lat = activeCampus.lat;
+        const lng = activeCampus.lng;
+        setCurrentLocationCoords({ lat, lng });
         setFromUseCurrentLocation(true);
         setRiderFrom("");
         setRiderFromCoords(null);
+        reverseGeocode(lat, lng).then((addr) => { if (addr) setCurrentLocationAddress(addr); });
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
@@ -2379,6 +3105,8 @@ export default function CollegeRide() {
   const handleRiderFromChange = (v) => {
     setRiderFrom(v);
     setOriginPickedFromBuilding(false);
+    setFromUseCurrentLocation(false);
+    setCurrentLocationAddress(null);
     if (!v.trim()) setRiderFromCoords(null);
   };
 
@@ -2434,47 +3162,88 @@ export default function CollegeRide() {
 
   const applyCommonRoute = useCallback(
     (trip) => {
-      if (!trip || typeof trip.toLat !== "number" || typeof trip.toLng !== "number") return;
-      if (trip.fromUseCurrentLocation) {
+      const toLat = trip != null ? Number(trip.toLat) : NaN;
+      const toLng = trip != null ? Number(trip.toLng) : NaN;
+      if (!trip || !Number.isFinite(toLat) || !Number.isFinite(toLng)) {
+        window.alert(
+          lang === "zh"
+            ? "该路线缺少有效坐标，请编辑常用路线并重新保存。"
+            : "This route has invalid coordinates. Edit and save the route again."
+        );
+        return;
+      }
+      const tripN = {
+        ...trip,
+        toLat,
+        toLng,
+        fromLat: trip.fromLat != null ? Number(trip.fromLat) : null,
+        fromLng: trip.fromLng != null ? Number(trip.fromLng) : null,
+      };
+      if (tripN.fromLat != null && !Number.isFinite(tripN.fromLat)) tripN.fromLat = null;
+      if (tripN.fromLng != null && !Number.isFinite(tripN.fromLng)) tripN.fromLng = null;
+
+      const tf = resolveTripTimeFields(tripN);
+
+      if (role === "driver") {
+        setSelectedRide(null);
+        setSelectedRequest(null);
+        setConfirmed(false);
+        setPlanTripOpen(false);
+        setPublishFormError("");
+        setDriverPublishModalOpen(false);
+        setPublishTo(tripN.toLabel || "");
+        if (tripN.fromUseCurrentLocation) {
+          setPublishFrom(currentLocationLabel);
+          if (currentLocationCoords?.lat != null && currentLocationCoords?.lng != null) {
+            setPublishFromLat(currentLocationCoords.lat);
+            setPublishFromLng(currentLocationCoords.lng);
+          } else {
+            setPublishFromLat(activeCampus.lat);
+            setPublishFromLng(activeCampus.lng);
+          }
+        } else {
+          setPublishFrom(tripN.fromLabel || "");
+          setPublishFromLat(tripN.fromLat ?? null);
+          setPublishFromLng(tripN.fromLng ?? null);
+        }
+        setPublishDepartTime(
+          tf.timeEnabled !== false ? formatScheduleMinutes(tf.outHour * 60 + tf.outMinute) : ""
+        );
+        setMapPicker(null);
+        driverAutoPublishTokenRef.current = null;
+        setDriverPendingSavedRoute({ trip: tripN, token: `${tripN.id}-${Date.now()}` });
+        setTab("find");
+        return;
+      }
+
+      setSelectedRide(null);
+      setSelectedRequest(null);
+      setConfirmed(false);
+
+      if (tripN.fromUseCurrentLocation) {
         userLockedCampus.current = false;
         setFromUseCurrentLocation(true);
         setRiderFrom("");
         setRiderFromCoords(null);
         setOriginPickedFromBuilding(false);
       } else {
-        if (trip.originJhuId) {
+        if (tripN.originJhuId) {
           userLockedCampus.current = true;
-          setJhuLocationId(trip.originJhuId);
+          setJhuLocationId(tripN.originJhuId);
         } else {
           userLockedCampus.current = false;
         }
         setFromUseCurrentLocation(false);
-        setRiderFrom(trip.fromLabel || "");
-        if (trip.fromLat != null && trip.fromLng != null) {
-          setRiderFromCoords({ lat: trip.fromLat, lng: trip.fromLng });
+        setRiderFrom(tripN.fromLabel || "");
+        if (tripN.fromLat != null && tripN.fromLng != null) {
+          setRiderFromCoords({ lat: tripN.fromLat, lng: tripN.fromLng });
         } else {
           setRiderFromCoords(null);
         }
-        setOriginPickedFromBuilding(!!trip.originPickedFromBuilding);
+        setOriginPickedFromBuilding(!!tripN.originPickedFromBuilding);
       }
-      setRiderTo(trip.toLabel);
-      setRiderToCoords({ lat: trip.toLat, lng: trip.toLng });
-      let tf;
-      if (typeof trip.minutes === "number" && !Number.isNaN(trip.minutes)) {
-        const m = Math.max(0, Math.min(24 * 60 - 1, trip.minutes));
-        const retOn = trip.returnEnabled === true && typeof trip.returnMinutes === "number" && !Number.isNaN(trip.returnMinutes);
-        const rm = retOn ? Math.max(0, Math.min(24 * 60 - 1, trip.returnMinutes)) : 0;
-        tf = {
-          timeEnabled: true,
-          outHour: Math.floor(m / 60) % 24,
-          outMinute: m % 60,
-          returnEnabled: retOn,
-          returnHour: retOn ? Math.floor(rm / 60) % 24 : 18,
-          returnMinute: retOn ? rm % 60 : 0,
-        };
-      } else {
-        tf = getCommonRouteTimeFields(trip);
-      }
+      setRiderTo(tripN.toLabel);
+      setRiderToCoords({ lat: tripN.toLat, lng: tripN.toLng });
       const n = new Date();
       const useScheduledTime = tf.timeEnabled !== false;
       if (useScheduledTime) {
@@ -2501,7 +3270,7 @@ export default function CollegeRide() {
       setTab("find");
       setPlanTripOpen(true);
     },
-    [setTab]
+    [setTab, role, lang, t, currentLocationCoords, activeCampus.lat, activeCampus.lng]
   );
 
   const resetCommonRouteCreateForm = useCallback(() => {
@@ -2754,14 +3523,53 @@ export default function CollegeRide() {
 
   const matchedRequests = useMemo(() => {
     const MAX_KM = 40;
-    const scored = DRIVER_REQUESTS_POOL.map((r) => ({
+    const scored = passengerRequests.map((r) => ({
       ...r,
       _km: approxKm(activeCampus.lat, activeCampus.lng, r.fromLat, r.fromLng),
     }));
     scored.sort((a, b) => a._km - b._km);
     const filtered = scored.filter((r) => r._km <= MAX_KM);
     return filtered.length ? filtered : scored;
-  }, [activeCampus]);
+  }, [activeCampus, passengerRequests]);
+
+  /** 司机选用常用路线后：只展示与路线相近的乘客请求 */
+  const driverDisplayedRequests = useMemo(() => {
+    if (role !== "driver" || !driverPendingSavedRoute) return matchedRequests;
+    return filterRequestsForSavedTrip(matchedRequests, driverPendingSavedRoute.trip, currentLocationCoords, activeCampus);
+  }, [role, driverPendingSavedRoute, matchedRequests, currentLocationCoords, activeCampus]);
+
+  useEffect(() => {
+    if (role !== "driver" || tab !== "find" || !driverPendingSavedRoute || !passengerRequestsHydrated) return;
+    const sub = filterRequestsForSavedTrip(
+      matchedRequests,
+      driverPendingSavedRoute.trip,
+      currentLocationCoords,
+      activeCampus
+    );
+    if (sub.length > 0) return;
+    const tok = driverPendingSavedRoute.token;
+    if (driverAutoPublishTokenRef.current === tok) return;
+    driverAutoPublishTokenRef.current = tok;
+    let cancelled = false;
+    (async () => {
+      const res = await commitPublishDriverRide({ closeModal: false });
+      if (!cancelled && res?.ok === false) {
+        driverAutoPublishTokenRef.current = null;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    role,
+    tab,
+    driverPendingSavedRoute,
+    matchedRequests,
+    currentLocationCoords,
+    activeCampus,
+    passengerRequestsHydrated,
+    commitPublishDriverRide,
+  ]);
 
   const mapPickerCenter = [activeCampus.lat, activeCampus.lng];
 
@@ -2892,6 +3700,7 @@ export default function CollegeRide() {
       padding: "6px 12px",
       borderRadius: 8,
       background: active ? colors.tint : "transparent",
+      transition: "color 0.18s ease, background-color 0.18s ease, transform 0.15s cubic-bezier(0.22,1,0.36,1)",
     }),
     sectionTitle: {
       fontSize: 11,
@@ -2940,15 +3749,196 @@ export default function CollegeRide() {
     },
   };
 
+  const ctxValue = {
+    // i18n
+    lang, setLang, t, tWeekdays, weeklyGridDayLabels,
+    // auth
+    user, signOut,
+    schoolDisplay, profileDisplayName, profileAvatarInitial,
+    // role/theme
+    role, setRole, roleSlideTarget, setRoleSlideTarget,
+    themePrimary, themePrimaryRgb,
+    // tab (URL-driven)
+    tab, setTab,
+    // campus
+    jhuLocationId, setJhuLocationId,
+    activeCampus,
+    currentLocationCoords, currentLocationAddress, currentLocationLabel,
+    planTripOriginNearestRef, planTripCampusOpen, setPlanTripCampusOpen,
+    originPickedFromBuilding, setOriginPickedFromBuilding,
+    originCampusesByDistance,
+    // rider find flow
+    riderStep, setRiderStep,
+    riderFrom, setRiderFrom, handleRiderFromChange,
+    riderFromCoords, setRiderFromCoords,
+    riderTo, setRiderTo, handleRiderToChange,
+    riderToCoords, setRiderToCoords,
+    fromUseCurrentLocation, setFromUseCurrentLocation,
+    riderFindTimeMode, setRiderFindTimeMode,
+    riderFindDate, setRiderFindDate,
+    riderFindHour, setRiderFindHour,
+    riderFindMinute, setRiderFindMinute,
+    riderFindWheelKey, setRiderFindWheelKey,
+    riderPostNotes, setRiderPostNotes,
+    riderPosting, riderPostError, setRiderPostError,
+    riderPostActive, setRiderPostActive,
+    commitRiderPost,
+    snapOriginToCurrentLocation,
+    onOriginInputFocus, onOriginInputBlur,
+    pickOriginBuilding, snapOriginToNearestBuilding, refreshLocationFromGeo,
+    // driver find flow
+    driverFindPath, setDriverFindPath,
+    driverPendingSavedRoute, setDriverPendingSavedRoute,
+    driverAutoPublishTokenRef,
+    postSeats, setPostSeats,
+    // publish
+    publishFrom, setPublishFrom,
+    publishTo, setPublishTo,
+    publishDepartTime, setPublishDepartTime,
+    publishFromLat, setPublishFromLat,
+    publishFromLng, setPublishFromLng,
+    publishSubmitting, publishFormError, setPublishFormError,
+    commitPublishDriverRide,
+    // rides/requests
+    publishedRides, setPublishedRides,
+    passengerRequests, setPassengerRequests,
+    passengerRequestsHydrated,
+    myPublishedRides, myPassengerRequests, myBookings,
+    matchedRides, matchedRequests, driverDisplayedRequests,
+    // detail views
+    selectedRide, setSelectedRide,
+    selectedRequest, setSelectedRequest,
+    rideDetailClosing, beginCloseRideDetail,
+    requestDetailClosing, beginCloseRequestDetail,
+    confirmed, setConfirmed,
+    commitPassengerBooking, commitDriverBooking,
+    // driver publish modal
+    driverPublishModalOpen, setDriverPublishModalOpen,
+    driverPublishModalClosing, beginCloseDriverPublishModal,
+    driverPublishToast,
+    mapPicker, setMapPicker,
+    mapPickerCenter,
+    // plan trip modal
+    planTripOpen, setPlanTripOpen,
+    planTripFocus, setPlanTripFocus,
+    planTripClosing, beginClosePlanTrip,
+    routePreviewReady, setRoutePreviewReady,
+    canConfirmPlanRoute,
+    planTripReturnEnabled, setPlanTripReturnEnabled,
+    returnScheduledDate, setReturnScheduledDate,
+    returnHour, setReturnHour,
+    returnMinute, setReturnMinute,
+    returnWheelKey, setReturnWheelKey,
+    swapPlanTripEndpoints, openPlanTripFromFind,
+    effectiveFromLatLng, planModalMapCenter,
+    planTripTimeChipLabel,
+    // pickup time
+    pickupTimeMenuOpen, setPickupTimeMenuOpen,
+    pickupMenuCloseTimerRef,
+    pickupTimeMenuExpanded, setPickupTimeMenuExpanded,
+    pickupMenuHighlight, setPickupMenuHighlight,
+    pickupTimeMode, setPickupTimeMode,
+    scheduledPickupDate, setScheduledPickupDate,
+    scheduledHour, setScheduledHour,
+    scheduledMinute, setScheduledMinute,
+    pickupWheelResetKey, setPickupWheelResetKey,
+    pickupPopoverLayout, setPickupPopoverLayout,
+    pickupPopoverClosing, setPickupPopoverClosing,
+    planPickupTimeBtnRef,
+    resetScheduleToNow,
+    closePickupMenuAnimated,
+    // common routes (saved)
+    commonRoutes,
+    deleteCommonRoute, applyCommonRoute,
+    showCommonRouteCreateForm, setShowCommonRouteCreateForm,
+    commonRouteSaveName, setCommonRouteSaveName,
+    commonRouteSaving,
+    crFrom, setCrFrom, crFromCoords, setCrFromCoords,
+    crTo, setCrTo, crToCoords, setCrToCoords,
+    crFromUseCL, setCrFromUseCL,
+    crTimeEnabled, setCrTimeEnabled,
+    crHour, setCrHour, crMinute, setCrMinute,
+    resetCommonRouteCreateForm, commitCreateCommonRoute,
+    // schedule modal
+    scheduleEntries,
+    scheduleHourSlots, scheduleWeekGridBounds,
+    scheduleModalOpen, setScheduleModalOpen, openScheduleModal,
+    scheduleModalClosing, beginCloseScheduleModal,
+    scheduleModalWeekday, setScheduleModalWeekday,
+    scheduleModalHour, setScheduleModalHour,
+    scheduleModalMinute, setScheduleModalMinute,
+    scheduleModalFrom, setScheduleModalFrom,
+    scheduleModalFromCoords, setScheduleModalFromCoords,
+    scheduleModalTo, setScheduleModalTo,
+    scheduleModalToCoords, setScheduleModalToCoords,
+    scheduleModalFromUseCL, setScheduleModalFromUseCL,
+    scheduleModalReturnEnabled, setScheduleModalReturnEnabled,
+    scheduleModalReturnHour, setScheduleModalReturnHour,
+    scheduleModalReturnMinute, setScheduleModalReturnMinute,
+    scheduleModalCommitting,
+    commitScheduleEntry, deleteScheduleEntry,
+    // history/ledger
+    ledger, tripCountAll,
+    monthlySavingsDisplay, monthlySavingsPctValue,
+    myPlatformHistoryItems,
+    historyCompletedFullOpen, setHistoryCompletedFullOpen,
+    historyPlatformDelete, setHistoryPlatformDelete,
+    historyPlatformDeleting,
+    confirmDeleteHistoryPlatform,
+    // profile
+    profileSettingsView, setProfileSettingsView,
+    langPanelClosing, closeLanguageFullscreen,
+    // date/wheel helpers
+    dateOptionsForWheel,
+    // styles/colors
+    colors, styles,
+  };
+
   const NavItem = ({ icon, label, id }) => (
-    <div style={styles.navItem(tab === id)} onClick={() => setTab(id)} role="button" tabIndex={0}>
+    <div className="cr-nav-item" style={styles.navItem(tab === id)} onClick={() => setTab(id)} role="button" tabIndex={0}>
       <span style={{ display: "flex", color: "inherit", height: 22, alignItems: "center" }}>{icon}</span>
       <span>{label}</span>
     </div>
   );
 
+  const renderHistoryLedgerTripCard = (trip) => {
+    const isPassenger = trip.role === "passenger";
+    const typeLabel = isPassenger ? t("tag_passenger") : t("tag_driver");
+    const sub =
+      isPassenger && trip.driverName
+        ? t("label_driver_was", { name: trip.driverName })
+        : !isPassenger
+          ? t("label_you_drove")
+          : "";
+    const costStr = isPassenger ? formatUsd(trip.priceUsd) : `+${formatUsd(trip.incomeUsd)}`;
+    return (
+      <div key={trip.id} style={{ ...styles.card, marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600 }}>{formatHistoryTripDate(trip.ts, lang)}</div>
+          <Tag text={typeLabel} accent={themePrimary} />
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
+          {trip.from} — {trip.to}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: colors.muted }}>{sub}</span>
+          <span
+            style={{
+              fontWeight: 700,
+              fontSize: 16,
+              color: isPassenger ? colors.text : colors.navy,
+            }}
+          >
+            {costStr}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   if (confirmed && selectedRide) {
     return (
+      <AppContext.Provider value={ctxValue}>
       <div style={{ ...styles.app, background: colors.navy }}>
         <link href={FONT_LINK} rel="stylesheet" />
         <style>{`
@@ -3018,11 +4008,13 @@ export default function CollegeRide() {
           </button>
         </div>
       </div>
+      </AppContext.Provider>
     );
   }
 
   if (selectedRide && !confirmed) {
     return (
+      <AppContext.Provider value={ctxValue}>
       <div
         className={rideDetailClosing ? "cr-stack-layer cr-stack-layer-exit" : "cr-stack-layer"}
         style={{
@@ -3148,22 +4140,24 @@ export default function CollegeRide() {
               setConfirmed(true);
             }}
           >
-            确认拼车
+            {t("btn_confirm_ride")}
           </button>
           <button
             style={{ ...styles.btnOutline, marginTop: 12 }}
             onClick={beginCloseRideDetail}
           >
-            取消
+            {t("btn_cancel")}
           </button>
         </div>
       </div>
+      </AppContext.Provider>
     );
   }
 
   if (selectedRequest) {
     const req = selectedRequest;
     return (
+      <AppContext.Provider value={ctxValue}>
       <div style={styles.app}>
         <link href={FONT_LINK} rel="stylesheet" />
         <div style={{ ...styles.header, padding: "16px 16px 14px" }}>
@@ -3183,11 +4177,11 @@ export default function CollegeRide() {
                 alignItems: "center",
                 justifyContent: "center",
               }}
-              aria-label="返回"
+              aria-label={t("btn_back")}
             >
               {Icons.chevronLeft}
             </button>
-            <span style={{ fontWeight: 600, fontSize: 17 }}>乘车请求详情</span>
+            <span style={{ fontWeight: 600, fontSize: 17 }}>{t("label_request_details")}</span>
           </div>
         </div>
         <div style={styles.content}>
@@ -3198,7 +4192,7 @@ export default function CollegeRide() {
                 <div style={{ fontWeight: 600, fontSize: 16, color: colors.text }}>{req.rider}</div>
                 <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>{req.school}</div>
               </div>
-              <Tag text="待接单" accent={themePrimary} />
+              <Tag text={t("tag_pending")} accent={themePrimary} />
             </div>
             <div style={{ height: 1, background: colors.border, margin: "0 0 18px" }} />
             <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
@@ -3209,11 +4203,11 @@ export default function CollegeRide() {
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>出发地</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("label_origin_detail")}</div>
                   <div style={{ fontWeight: 600, fontSize: 15, marginTop: 4 }}>{req.from}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>目的地</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("label_dest_detail")}</div>
                   <div style={{ fontWeight: 600, fontSize: 15, marginTop: 4 }}>{req.to}</div>
                 </div>
               </div>
@@ -3221,7 +4215,7 @@ export default function CollegeRide() {
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>路线地图</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{t("label_route_map")}</div>
             <TripRouteMap
               fromLat={req.fromLat}
               fromLng={req.fromLng}
@@ -3229,15 +4223,16 @@ export default function CollegeRide() {
               toLng={req.toLng}
               lineColor={themePrimary}
               userLocation={currentLocationCoords}
+              loadingText={t("label_loading_route")}
             />
-            <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>路线基于 OpenStreetMap / OSRM 道路网络规划，仅供参考。</div>
+            <div style={{ fontSize: 11, color: colors.muted, marginTop: 8, lineHeight: 1.45 }}>{t("map_disclaimer")}</div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
             {[
-              { label: "希望出发", value: req.time, icon: Icons.clock },
-              { label: "绕路时间", value: req.detour, icon: Icons.mapPath },
-              { label: "预计收益", value: req.earn, icon: Icons.car },
+              { label: t("label_time_pref"), value: req.time, icon: Icons.clock },
+              { label: t("label_detour_time"), value: req.detour, icon: Icons.mapPath },
+              { label: t("label_est_earnings"), value: req.earn, icon: Icons.car },
             ].map((item) => (
               <div key={item.label} style={{ ...styles.card, textAlign: "center", marginBottom: 0, padding: "14px 8px" }}>
                 <div style={{ display: "flex", justifyContent: "center", color: colors.navy, marginBottom: 8 }}>{item.icon}</div>
@@ -3248,9 +4243,9 @@ export default function CollegeRide() {
           </div>
 
           <div style={{ ...styles.card, background: colors.tint, border: `1px solid ${colors.border}` }}>
-            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, fontWeight: 500 }}>本单预计收益</div>
+            <div style={{ fontSize: 12, color: colors.muted, marginBottom: 4, fontWeight: 500 }}>{t("label_earn_this_trip")}</div>
             <div style={{ fontSize: 30, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>{req.earn}</div>
-            <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>接单后以实际绕路为准</div>
+            <div style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>{t("label_earn_note")}</div>
           </div>
 
           <button
@@ -3261,17 +4256,19 @@ export default function CollegeRide() {
               beginCloseRequestDetail();
             }}
           >
-            接受订单
+            {t("btn_accept_request")}
           </button>
           <button type="button" style={{ ...styles.btnOutline, marginTop: 12 }} onClick={beginCloseRequestDetail}>
-            返回
+            {t("btn_back")}
           </button>
         </div>
       </div>
+      </AppContext.Provider>
     );
   }
 
   return (
+    <AppContext.Provider value={ctxValue}>
     <div style={styles.app}>
       <link href={FONT_LINK} rel="stylesheet" />
       <style>{`
@@ -3299,7 +4296,14 @@ export default function CollegeRide() {
         }
         .cr-ride-card { transition: box-shadow 0.2s ease, border-color 0.2s ease; }
         .cr-ride-card:hover { box-shadow: 0 8px 24px rgba(${themePrimaryRgb}, 0.1); border-color: #c5d0e0; }
-        .cr-input-wrap:focus-within { border-color: ${themePrimary}; box-shadow: 0 0 0 3px rgba(${themePrimaryRgb}, 0.15); }
+        .cr-input-wrap.cr-plan-input-dark-wrap:focus-within {
+          border-color: ${themePrimary};
+          box-shadow: 0 0 0 3px rgba(${themePrimaryRgb}, 0.15);
+        }
+        .cr-input-wrap-light:focus-within {
+          border-color: ${themePrimary};
+          box-shadow: none;
+        }
         .cr-plan-input-dark::placeholder { color: #ffffff; }
         @keyframes crPickupPopoverDrop {
           from {
@@ -3459,1131 +4463,13 @@ export default function CollegeRide() {
                   : "none",
           }}
         >
-        {tab === "find" && role === "rider" && (
-          <>
-            <div style={{ ...styles.card, marginTop: 2, padding: "20px" }}>
-              <div style={styles.label}>{t("label_route")}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 14, letterSpacing: "-0.02em" }}>{t("label_search_trips")}</div>
-              <div
-                style={{
-                  border: `1px solid ${colors.border}`,
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  background: colors.white,
-                  display: "flex",
-                  alignItems: "stretch",
-                }}
-              >
-                <div
-                  style={{
-                    width: 28,
-                    flexShrink: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    paddingTop: 14,
-                    paddingBottom: 14,
-                    background: colors.page,
-                    borderRight: `1px solid ${colors.border}`,
-                  }}
-                >
-                  <div style={{ width: 9, height: 9, borderRadius: "50%", border: `2px solid ${colors.navy}` }} />
-                  <div style={{ flex: 1, width: 2, background: colors.border, margin: "6px 0" }} />
-                  <div style={{ width: 8, height: 8, background: colors.navy, borderRadius: 2 }} />
-                </div>
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", minHeight: 48 }}>
-                    <button
-                      type="button"
-                      onClick={() => openPlanTripFromFind("from")}
-                      style={{
-                        flex: 1,
-                        textAlign: "left",
-                        padding: "14px 8px 14px 12px",
-                        border: "none",
-                        background: "transparent",
-                        cursor: "pointer",
-                        fontSize: 15,
-                        fontWeight: 600,
-                        color: colors.text,
-                        fontFamily: "'Inter', system-ui, sans-serif",
-                      }}
-                    >
-                      {fromUseCurrentLocation ? "当前位置" : riderFrom || "输入出发地"}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="将出发地设为当前位置"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        snapOriginToCurrentLocation();
-                      }}
-                      style={{
-                        flexShrink: 0,
-                        width: 40,
-                        height: 40,
-                        marginRight: 4,
-                        border: "none",
-                        borderRadius: 10,
-                        background: "transparent",
-                        color: colors.navy,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <span style={{ display: "flex" }}>{Icons.navigate}</span>
-                    </button>
-                  </div>
-                  <div style={{ height: 1, background: colors.border }} />
-                  <button
-                    type="button"
-                    onClick={() => openPlanTripFromFind("to")}
-                    style={{
-                      flex: 1,
-                      textAlign: "left",
-                      padding: "14px 12px",
-                      border: "none",
-                      background: "transparent",
-                      cursor: "pointer",
-                      fontSize: 15,
-                      fontWeight: riderTo ? 600 : 400,
-                      color: riderTo ? colors.text : colors.muted,
-                      fontFamily: "'Inter', system-ui, sans-serif",
-                    }}
-                  >
-                    {riderTo || t("ph_where_to")}
-                  </button>
-                </div>
-              </div>
-              {routePreviewReady && effectiveFromLatLng && riderToCoords && (
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ ...styles.label, marginTop: 0 }}>{t("label_route_preview")}</div>
-                  <TripRouteMap
-                    fromLat={effectiveFromLatLng.lat}
-                    fromLng={effectiveFromLatLng.lng}
-                    toLat={riderToCoords.lat}
-                    toLng={riderToCoords.lng}
-                    lineColor={themePrimary}
-                    userLocation={currentLocationCoords}
-                    loadingText={t("label_loading_route")}
-                  />
-                </div>
-              )}
-            </div>
-
-            <div style={styles.sectionTitle}>{t("section_nearby")}</div>
-            <div style={styles.sectionHeadline}>{t("headline_matches", { count: matchedRides.length })}</div>
-            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.5 }}>
-              {t("desc_nearby", { campus: activeCampus.short })}
-            </p>
-            {matchedRides.length === 0 ? (
-              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("empty_find_rides")}</div>
-              </div>
-            ) : null}
-            {matchedRides.map((ride) => (
-              <div
-                key={ride.id}
-                className="cr-ride-card"
-                style={styles.rideCard}
-                onClick={() => {
-                  setSelectedRequest(null);
-                  setSelectedRide(ride);
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <Avatar name={ride.driver} accent={themePrimary} />
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 15, color: colors.text }}>{ride.driver}</div>
-                      <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>
-                        {ride.school} · <StarRating rating={ride.rating} />
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 22, fontWeight: 700, color: colors.navy, letterSpacing: "-0.03em" }}>${ride.price.toFixed(2)}</div>
-                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>{t("label_per_person")}</div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "stretch",
-                    marginBottom: 12,
-                    padding: "12px 14px",
-                    background: colors.page,
-                    borderRadius: 10,
-                    border: `1px solid ${colors.border}`,
-                  }}
-                >
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginRight: 12, paddingTop: 4 }}>
-                    <div style={styles.routeDot(true)} />
-                    <div style={{ width: 2, flex: 1, minHeight: 16, background: colors.border, margin: "4px 0" }} />
-                    <div style={styles.routeDot(false)} />
-                  </div>
-                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" }}>
-                    <div>
-                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_from")} </span>
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.from}</span>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_to")} </span>
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.to}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  <Tag text={ride.time} accent={themePrimary} />
-                  <Tag text={t("label_seats_n", { n: ride.seats })} accent={themePrimary} />
-                  <Tag text={t("label_detour", { d: ride.detour })} accent={themePrimary} />
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-
-        {tab === "find" && role === "driver" && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                setPublishFormError("");
-                setDriverPublishModalOpen(true);
-              }}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 10,
-                padding: "14px 18px",
-                borderRadius: 12,
-                border: `1px solid ${DRIVER_PRIMARY}`,
-                background: DRIVER_PRIMARY,
-                color: "#ffffff",
-                fontSize: 16,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "'Inter', system-ui, sans-serif",
-                marginBottom: 16,
-                boxSizing: "border-box",
-              }}
-            >
-              <span style={{ display: "flex", width: 22, height: 22, alignItems: "center", justifyContent: "center" }}>{Icons.plus}</span>
-              <span>{t("headline_driver_publish")}</span>
-            </button>
-
-            {driverPublishModalOpen &&
-              typeof document !== "undefined" &&
-              createPortal(
-                <div
-                  style={{
-                    position: "fixed",
-                    inset: 0,
-                    zIndex: 100055,
-                    pointerEvents: "auto",
-                    fontFamily: "'Inter', system-ui, sans-serif",
-                  }}
-                >
-                  <div
-                    aria-hidden
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      background: "rgba(0,0,0,0.42)",
-                      pointerEvents: "auto",
-                    }}
-                  />
-                  <div
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="cr-driver-publish-title"
-                    className={
-                      driverPublishModalClosing
-                        ? "cr-driver-publish-panel cr-driver-publish-panel-exit"
-                        : "cr-driver-publish-panel"
-                    }
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      width: "100%",
-                      maxWidth: 430,
-                      margin: "0 auto",
-                      display: "flex",
-                      flexDirection: "column",
-                      background: colors.card,
-                      color: colors.text,
-                      zIndex: 1,
-                      boxSizing: "border-box",
-                      boxShadow: "-6px 0 32px rgba(0,0,0,0.18)",
-                      pointerEvents: "auto",
-                      touchAction: "auto",
-                    }}
-                  >
-                    <div
-                      style={{
-                        flexShrink: 0,
-                        paddingTop: "max(10px, env(safe-area-inset-top))",
-                        paddingLeft: 12,
-                        paddingRight: 12,
-                        paddingBottom: 10,
-                        borderBottom: `1px solid ${colors.border}`,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        background: colors.card,
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={beginCloseDriverPublishModal}
-                        aria-label={t("btn_back")}
-                        style={{
-                          flexShrink: 0,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          padding: "8px 6px 8px 0",
-                          border: "none",
-                          background: "none",
-                          color: colors.text,
-                          fontWeight: 600,
-                          fontSize: 16,
-                          cursor: "pointer",
-                          fontFamily: "'Inter', system-ui, sans-serif",
-                        }}
-                      >
-                        <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
-                        {t("btn_back")}
-                      </button>
-                      <div
-                        id="cr-driver-publish-title"
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          textAlign: "center",
-                          fontWeight: 700,
-                          fontSize: 17,
-                          color: colors.text,
-                        }}
-                      >
-                        {t("headline_driver_publish")}
-                      </div>
-                      <div style={{ width: 72, flexShrink: 0 }} aria-hidden />
-                    </div>
-                    <div
-                      style={{
-                        flex: 1,
-                        minHeight: 0,
-                        overflowY: "auto",
-                        WebkitOverflowScrolling: "touch",
-                        paddingLeft: 18,
-                        paddingRight: 18,
-                        paddingTop: 14,
-                      }}
-                    >
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{t("label_origin")}</div>
-                  <input
-                    value={publishFrom}
-                    onChange={(e) => setPublishFrom(e.target.value)}
-                    style={{ ...styles.input, paddingLeft: 12 }}
-                    placeholder={t("label_origin")}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setMapPicker((p) => (p === "publish-from" ? null : "publish-from"))}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      marginBottom: 12,
-                      marginTop: 4,
-                      padding: "4px 0",
-                      border: "none",
-                      background: "none",
-                      color: colors.navy,
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      fontFamily: "'Inter', system-ui, sans-serif",
-                    }}
-                  >
-                    <span style={{ display: "flex" }}>{Icons.mapPath}</span>
-                    {t("label_map_pick")}
-                  </button>
-                  {mapPicker === "publish-from" && (
-                    <MapPickerPanel
-                      lineColor={colors.navy}
-                      center={mapPickerCenter}
-                      userLocation={currentLocationCoords}
-                      onPick={({ name, lat, lng }) => {
-                        setPublishFrom(name);
-                        setPublishFromLat(lat);
-                        setPublishFromLng(lng);
-                        setMapPicker(null);
-                      }}
-                      onClose={() => setMapPicker(null)}
-                    />
-                  )}
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>{t("label_destination")}</div>
-                  <input
-                    value={publishTo}
-                    onChange={(e) => setPublishTo(e.target.value)}
-                    style={{ ...styles.input, paddingLeft: 12 }}
-                    placeholder={t("label_destination")}
-                  />
-
-                  <div style={styles.label}>{t("label_depart_time")}</div>
-                  <input
-                    value={publishDepartTime}
-                    onChange={(e) => setPublishDepartTime(e.target.value)}
-                    style={{ ...styles.input, paddingLeft: 12 }}
-                    placeholder={lang === "en" ? "e.g. 8:30 AM" : "如：8:30"}
-                  />
-
-                  <div style={styles.label}>{t("label_seats_available")}</div>
-                  <select
-                    id="cr-post-seats"
-                    aria-label={t("label_seats_available")}
-                    value={postSeats}
-                    onChange={(e) => setPostSeats(Number(e.target.value))}
-                    style={{
-                      width: "100%",
-                      padding: "12px 14px",
-                      borderRadius: 10,
-                      border: `1px solid ${colors.border}`,
-                      fontSize: 14,
-                      fontFamily: "'Inter', system-ui, sans-serif",
-                      fontWeight: 500,
-                      backgroundColor: colors.white,
-                      color: colors.text,
-                      cursor: "pointer",
-                      boxSizing: "border-box",
-                      outline: "none",
-                      marginBottom: 14,
-                    }}
-                  >
-                    {[1, 2, 3, 4, 5, 6].map((n) => (
-                      <option key={n} value={n}>
-                        {t("label_seats_n", { n })}
-                      </option>
-                    ))}
-                  </select>
-
-                  <div style={{ ...styles.card, background: colors.tint, border: `1px solid ${colors.border}`, padding: "14px 16px", marginBottom: 14 }}>
-                    <div style={{ fontSize: 14, color: colors.navy, fontWeight: 600 }}>{t("driver_price_card_title")}</div>
-                    <div style={{ fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 1.5 }}>{t("platform_fee_driver_blurb")}</div>
-                  </div>
-                  {publishFormError ? (
-                    <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12, fontWeight: 500, lineHeight: 1.45 }}>{publishFormError}</div>
-                  ) : null}
-                    </div>
-                    <div
-                      style={{
-                        flexShrink: 0,
-                        padding: "12px 18px max(16px, env(safe-area-inset-bottom))",
-                        borderTop: `1px solid ${colors.border}`,
-                        background: colors.card,
-                      }}
-                    >
-                      <button
-                        type="button"
-                        disabled={publishSubmitting}
-                        style={{
-                          ...styles.btn,
-                          marginBottom: 0,
-                          opacity: publishSubmitting ? 0.65 : 1,
-                          cursor: publishSubmitting ? "not-allowed" : "pointer",
-                        }}
-                        onClick={async () => {
-                          setPublishFormError("");
-                          const fromT = publishFrom.trim();
-                          const toT = publishTo.trim();
-                          const timeT = publishDepartTime.trim();
-                          if (!fromT || !toT || !timeT) {
-                            setPublishFormError(
-                              lang === "zh" ? "请填写出发地、目的地和出发时间。" : "Fill in origin, destination, and departure time."
-                            );
-                            return;
-                          }
-                          if (!isSupabaseConfigured) {
-                            setPublishFormError(
-                              lang === "zh" ? "未配置云端（VITE_SUPABASE_*），无法发布。" : "Supabase env vars missing; cannot publish."
-                            );
-                            return;
-                          }
-                          setPublishSubmitting(true);
-                          try {
-                            const bias = { lat: activeCampus.lat, lon: activeCampus.lng };
-                            let fromCoords =
-                              publishFromLat != null && publishFromLng != null
-                                ? { lat: publishFromLat, lng: publishFromLng }
-                                : await geocodePhotonFirst(fromT, bias);
-                            const toCoords = await geocodePhotonFirst(toT, bias);
-                            if (!fromCoords || !toCoords) {
-                              setPublishFormError(
-                                lang === "zh"
-                                  ? "无法解析地址，请写得更具体或稍后再试。"
-                                  : "Could not geocode addresses. Try a more specific place."
-                              );
-                              return;
-                            }
-                            const { error } = await insertPublishedRide({
-                              driverName: user?.displayName?.trim() || user?.email?.split("@")[0] || "Driver",
-                              school: user?.school || "",
-                              from: fromT,
-                              to: toT,
-                              fromLat: fromCoords.lat,
-                              fromLng: fromCoords.lng,
-                              toLat: toCoords.lat,
-                              toLng: toCoords.lng,
-                              departTime: timeT,
-                              seats: postSeats,
-                              price: 8.5,
-                              detour: "+10 min",
-                            });
-                            if (error) {
-                              const msg =
-                                error.message === "SUPABASE_NOT_CONFIGURED"
-                                  ? lang === "zh"
-                                    ? "未配置 Supabase。"
-                                    : "Supabase not configured."
-                                  : error.message === "NOT_SIGNED_IN"
-                                    ? lang === "zh"
-                                      ? "请先登录。"
-                                      : "Sign in required."
-                                    : error.message;
-                              setPublishFormError(msg);
-                              return;
-                            }
-                            const { data: refreshed } = await fetchPublishedRides();
-                            setPublishedRides(refreshed);
-                            setDriverPublishToast(t("publish_toast"));
-                            window.setTimeout(() => setDriverPublishToast(""), 2800);
-                            beginCloseDriverPublishModal();
-                            setPublishFrom("");
-                            setPublishTo("");
-                            setPublishDepartTime("");
-                            setPublishFromLat(null);
-                            setPublishFromLng(null);
-                          } finally {
-                            setPublishSubmitting(false);
-                          }
-                        }}
-                      >
-                        {publishSubmitting ? (lang === "zh" ? "发布中…" : "Publishing…") : t("btn_publish_trip")}
-                      </button>
-                    </div>
-                  </div>
-                </div>,
-                document.body
-              )}
-
-            <div style={{ ...styles.sectionTitle, marginTop: 4 }}>{t("section_find_passengers")}</div>
-            <div style={styles.sectionHeadline}>{t("headline_driver_browse_passengers")}</div>
-            {matchedRequests.length === 0 ? (
-              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("empty_find_requests")}</div>
-              </div>
-            ) : null}
-            {matchedRequests.map((req) => (
-              <div
-                key={req.id}
-                className="cr-ride-card"
-                style={{ ...styles.rideCard, cursor: "pointer" }}
-                onClick={() => {
-                  setSelectedRide(null);
-                  setSelectedRequest(req);
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <Avatar name={req.rider} accent={themePrimary} />
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 15 }}>{req.rider}</div>
-                      <div style={{ fontSize: 12, color: colors.muted, marginTop: 2 }}>{req.school}</div>
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: colors.navy }}>{req.earn}</div>
-                    <div style={{ fontSize: 11, color: colors.muted, fontWeight: 500 }}>{t("label_est_earnings")}</div>
-                  </div>
-                </div>
-                <div style={{ padding: "12px 14px", background: colors.page, borderRadius: 10, marginBottom: 12, border: `1px solid ${colors.border}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 13, fontWeight: 600 }}>
-                    <span>{req.from}</span>
-                    <span style={{ color: colors.muted, fontWeight: 400 }}>—</span>
-                    <span>{req.to}</span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
-                  <Tag text={req.time} accent={themePrimary} />
-                  <Tag text={t("label_detour", { d: req.detour })} accent={themePrimary} />
-                  {typeof req._km === "number" && <Tag text={t("label_dist_from_you", { km: req._km.toFixed(1) })} accent={themePrimary} />}
-                </div>
-                <button
-                  type="button"
-                  style={{ ...styles.btn, padding: "12px", fontSize: 14 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedRide(null);
-                    setSelectedRequest(req);
-                  }}
-                >
-                  {t("btn_view_details")}
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-
-        {tab === "saved" && (
-          <>
-            <div style={styles.sectionTitle}>{t("section_saved")}</div>
-            <div style={styles.sectionHeadline}>{t("headline_saved")}</div>
-            <p style={{ fontSize: 13, color: colors.muted, marginTop: -6, marginBottom: 14, lineHeight: 1.55 }}>
-              {role === "driver" ? t("desc_saved_driver") : t("desc_saved_rider")}
-            </p>
-
-            <div style={{ ...styles.card, marginBottom: 14 }}>
-              {!showCommonRouteCreateForm ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    resetCommonRouteCreateForm();
-                    setShowCommonRouteCreateForm(true);
-                  }}
-                  style={{ ...styles.btnOutline, width: "100%", marginBottom: 0 }}
-                >
-                  创建常用路线
-                </button>
-              ) : (
-                <div>
-                  <div style={{ ...styles.label, marginBottom: 8 }}>路线名称</div>
-                  <input
-                    type="text"
-                    value={commonRouteSaveName}
-                    onChange={(e) => setCommonRouteSaveName(e.target.value)}
-                    placeholder={t("ph_route_name")}
-                    style={{ ...styles.input, marginBottom: 12 }}
-                  />
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer", fontSize: 14, color: colors.text }}>
-                    <input
-                      type="checkbox"
-                      className="cr-checkbox"
-                      checked={crFromUseCL}
-                      onChange={(e) => {
-                        setCrFromUseCL(e.target.checked);
-                        if (e.target.checked) {
-                          setCrFrom("");
-                          setCrFromCoords(null);
-                        }
-                      }}
-                      style={{
-                        cursor: "pointer",
-                        ["--cr-checkbox-border"]: colors.navy,
-                        ["--cr-checkbox-fill"]: colors.navy,
-                        ["--cr-checkbox-dot"]: colors.white,
-                      }}
-                    />
-                    {t("cb_use_current_loc")}
-                  </label>
-                  {!crFromUseCL && (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ ...styles.label, marginBottom: 6 }}>{t("label_origin_point")}</div>
-                      <PlaceSuggestField
-                        inputId="cr-create-from"
-                        value={crFrom}
-                        onChange={setCrFrom}
-                        onCoordsChange={setCrFromCoords}
-                        placeholder={t("ph_address")}
-                        variant="light"
-                        borderColor={colors.border}
-                        hoverRgb={themePrimaryRgb}
-                        biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
-                        biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
-                        icon={
-                          <span
-                            style={{
-                              position: "absolute",
-                              left: 10,
-                              top: "50%",
-                              transform: "translateY(-50%)",
-                              color: colors.navy,
-                              display: "flex",
-                              zIndex: 1,
-                              pointerEvents: "none",
-                            }}
-                          >
-                            {Icons.pin}
-                          </span>
-                        }
-                        inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36 }}
-                        wrapperStyle={{ borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.white }}
-                      />
-                    </div>
-                  )}
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ ...styles.label, marginBottom: 6 }}>{t("label_return_point")}</div>
-                    <PlaceSuggestField
-                      inputId="cr-create-to"
-                      value={crTo}
-                      onChange={setCrTo}
-                      onCoordsChange={setCrToCoords}
-                      placeholder={t("ph_destination")}
-                      variant="light"
-                      borderColor={colors.border}
-                      hoverRgb={themePrimaryRgb}
-                      biasLat={currentLocationCoords?.lat ?? activeCampus.lat}
-                      biasLng={currentLocationCoords?.lng ?? activeCampus.lng}
-                      icon={
-                        <span
-                          style={{
-                            position: "absolute",
-                            left: 10,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            color: colors.navy,
-                            display: "flex",
-                            zIndex: 1,
-                            pointerEvents: "none",
-                          }}
-                        >
-                          {Icons.flag}
-                        </span>
-                      }
-                      inputStyle={{ ...styles.input, marginBottom: 0, paddingLeft: 36 }}
-                      wrapperStyle={{ borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.white }}
-                    />
-                  </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: crTimeEnabled ? 10 : 12, cursor: "pointer", fontSize: 14, color: colors.text }}>
-                    <input
-                      type="checkbox"
-                      className="cr-checkbox"
-                      checked={crTimeEnabled}
-                      onChange={(e) => setCrTimeEnabled(e.target.checked)}
-                      style={{
-                        cursor: "pointer",
-                        ["--cr-checkbox-border"]: colors.navy,
-                        ["--cr-checkbox-fill"]: colors.navy,
-                        ["--cr-checkbox-dot"]: colors.white,
-                      }}
-                    />
-                    {t("cb_set_time")}
-                  </label>
-                  {crTimeEnabled && (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: colors.muted, marginBottom: 8 }}>{t("label_depart_time_24h")}</div>
-                      <TimeHourMinuteBlock
-                        hideLabel
-                        variant="light"
-                        hour24={crHour}
-                        minute={crMinute}
-                        onHour24Change={setCrHour}
-                        onMinuteChange={setCrMinute}
-                      />
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowCommonRouteCreateForm(false);
-                        resetCommonRouteCreateForm();
-                      }}
-                      style={{ ...styles.btnOutline, flex: 1 }}
-                    >
-                      {t("btn_cancel")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => commitCreateCommonRoute()}
-                      disabled={
-                        commonRouteSaving ||
-                        !crTo.trim() ||
-                        !(crFromUseCL || crFrom.trim())
-                      }
-                      style={{
-                        ...styles.btn,
-                        flex: 1,
-                        opacity:
-                          commonRouteSaving || !crTo.trim() || !(crFromUseCL || crFrom.trim()) ? 0.45 : 1,
-                      }}
-                    >
-                      {commonRouteSaving ? t("btn_saving") : t("btn_save")}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {commonRoutes.length === 0 ? (
-              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 20 }}>
-                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>
-                  {t("empty_saved")}
-                </div>
-              </div>
-            ) : (
-              commonRoutes.map((trip) => {
-                const shortFrom = trip.fromUseCurrentLocation
-                  ? t("label_current_location")
-                  : shortSchedulePlaceName(trip.fromLabel, { fallback: t("label_origin_fallback") });
-                const shortTo = shortSchedulePlaceName(trip.toLabel, { fallback: t("label_return_fallback") });
-                const tf = getCommonRouteTimeFields(trip);
-                const summary =
-                  `${shortFrom} → ${shortTo}` +
-                  (tf.timeEnabled ? ` · ${t("label_depart_short")} ${formatScheduleMinutes(tf.outHour * 60 + tf.outMinute)}` : "");
-                return (
-                  <div key={trip.id} style={{ ...styles.card, padding: "8px 12px", marginBottom: 8 }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 10,
-                        marginBottom: 4,
-                        minHeight: 22,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          fontSize: 15,
-                          color: colors.text,
-                          lineHeight: 1.25,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          minWidth: 0,
-                          flex: 1,
-                        }}
-                      >
-                        {trip.name}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                        <button
-                          type="button"
-                          onClick={() => applyCommonRoute(trip)}
-                          style={{
-                            border: "none",
-                            background: colors.navy,
-                            color: colors.white,
-                            fontSize: 12,
-                            fontWeight: 600,
-                            padding: "5px 10px",
-                            borderRadius: 8,
-                            cursor: "pointer",
-                            fontFamily: "'Inter', system-ui, sans-serif",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          使用此路线
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteCommonRoute(trip.id)}
-                          style={{
-                            border: "none",
-                            background: "#dc2626",
-                            color: colors.white,
-                            fontSize: 12,
-                            fontWeight: 600,
-                            padding: "5px 10px",
-                            borderRadius: 8,
-                            cursor: "pointer",
-                            fontFamily: "'Inter', system-ui, sans-serif",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {t("btn_delete")}
-                        </button>
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        color: colors.muted,
-                        lineHeight: 1.35,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={summary}
-                    >
-                      {summary}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-
-            <div style={{ marginTop: 8, marginBottom: 10, minWidth: 0, width: "100%" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  marginBottom: 8,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ ...styles.sectionTitle, marginTop: 0, marginBottom: 4 }}>{t("section_weekly")}</div>
-                  <div style={{ ...styles.sectionHeadline, margin: 0 }}>{t("headline_weekly")}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={openScheduleModal}
-                  aria-label={t("btn_add_schedule")}
-                  title={t("btn_add_schedule")}
-                  style={{
-                    flexShrink: 0,
-                    width: 44,
-                    height: 44,
-                    borderRadius: 12,
-                    border: `1.5px solid ${colors.navy}`,
-                    background: colors.white,
-                    color: colors.navy,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                    padding: 0,
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
-                    marginTop: 2,
-                  }}
-                >
-                  <span style={{ display: "flex" }}>{Icons.plus}</span>
-                </button>
-              </div>
-              <p style={{ fontSize: 13, color: colors.muted, margin: "0 0 12px", lineHeight: 1.55 }}>
-                {t("desc_weekly")}
-              </p>
-            </div>
-
-            <div
-              className="cr-weekly-schedule-table"
-              style={{
-                width: "100%",
-                maxWidth: "100%",
-                minWidth: 0,
-                marginBottom: 8,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 10,
-                overflow: "hidden",
-                background: colors.page,
-                boxSizing: "border-box",
-              }}
-            >
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "22px repeat(7, minmax(0, 1fr))",
-                      gap: 0,
-                      background: colors.card,
-                      borderBottom: `1px solid ${colors.border}`,
-                      width: "100%",
-                      minWidth: 0,
-                      boxSizing: "border-box",
-                    }}
-                  >
-                    <div style={{ minHeight: 22, minWidth: 0 }} aria-hidden />
-                    {weeklyGridDayLabels.map((label) => (
-                      <div
-                        key={label}
-                        style={{
-                          textAlign: "center",
-                          fontSize: 9,
-                          fontWeight: 700,
-                          color: colors.muted,
-                          padding: "5px 0",
-                          letterSpacing: 0,
-                          borderLeft: `1px solid ${colors.border}`,
-                          minWidth: 0,
-                          maxWidth: "100%",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {label}
-                      </div>
-                    ))}
-                  </div>
-                  {scheduleHourSlots.map((slotStart) => (
-                    <div
-                      key={slotStart}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "22px repeat(7, minmax(0, 1fr))",
-                        gap: 0,
-                        borderTop: slotStart > scheduleWeekGridBounds.rowStartMin ? `1px solid ${colors.border}` : undefined,
-                        minHeight: 44,
-                        width: "100%",
-                        minWidth: 0,
-                        boxSizing: "border-box",
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 8,
-                          fontWeight: 700,
-                          color: colors.muted,
-                          padding: "5px 1px 0 0",
-                          textAlign: "right",
-                          background: colors.page,
-                          boxSizing: "border-box",
-                          lineHeight: 1.15,
-                          minWidth: 0,
-                          overflow: "hidden",
-                        }}
-                      >
-                        {formatScheduleMinutes(slotStart)}
-                      </div>
-                      {WEEKDAY_LABELS.map((_, wd) => {
-                        const cellItems = scheduleEntries.filter(
-                          (e) =>
-                            e.weekday === wd &&
-                            (scheduleEntryInHourSlot(e, slotStart) || scheduleReturnInHourSlot(e, slotStart))
-                        );
-                        return (
-                          <div
-                            key={`${slotStart}-${wd}`}
-                            style={{
-                              borderLeft: `1px solid ${colors.border}`,
-                              padding: 2,
-                              background: colors.white,
-                              minHeight: 40,
-                              minWidth: 0,
-                              maxWidth: "100%",
-                              display: "flex",
-                              flexDirection: "column",
-                              gap: 2,
-                              alignItems: "stretch",
-                              boxSizing: "border-box",
-                              overflow: "hidden",
-                            }}
-                          >
-                            {cellItems.map((entry) => {
-                              const shortFrom = entry.fromUseCurrentLocation
-                                ? t("label_current_location")
-                                : shortSchedulePlaceName(entry.fromLabel, { fallback: t("label_origin_fallback") });
-                              const shortTo = shortSchedulePlaceName(entry.toLabel, { fallback: t("label_dest_fallback") });
-                              const routeShort = `${shortFrom} → ${shortTo}`;
-                              const showDep = scheduleEntryInHourSlot(entry, slotStart);
-                              const showRet = scheduleReturnInHourSlot(entry, slotStart);
-                              return (
-                                <div
-                                  key={`${entry.id}-${slotStart}`}
-                                  style={{
-                                    background: colors.card,
-                                    borderRadius: 6,
-                                    padding: "5px 4px 4px",
-                                    border: `1px solid ${colors.border}`,
-                                    fontSize: 9,
-                                    lineHeight: 1.25,
-                                    minWidth: 0,
-                                    maxWidth: "100%",
-                                    overflow: "hidden",
-                                  }}
-                                >
-                                  {showDep && (
-                                    <>
-                                      <div style={{ fontWeight: 700, color: colors.navy, fontSize: 9, marginBottom: 2 }}>
-                                        {formatScheduleMinutes(entry.minutes)}
-                                      </div>
-                                      <div
-                                        style={{
-                                          color: colors.text,
-                                          marginBottom: showRet ? 4 : 4,
-                                          wordBreak: "break-word",
-                                          overflowWrap: "anywhere",
-                                        }}
-                                      >
-                                        {routeShort}
-                                      </div>
-                                    </>
-                                  )}
-                                  {showRet && !showDep && (
-                                    <div
-                                      style={{
-                                        color: colors.text,
-                                        marginBottom: 4,
-                                        fontSize: 9,
-                                        wordBreak: "break-word",
-                                        overflowWrap: "anywhere",
-                                      }}
-                                    >
-                                      {routeShort}
-                                    </div>
-                                  )}
-                                  {showRet && (
-                                    <div style={{ fontSize: 9, fontWeight: 600, color: colors.muted, marginBottom: 4 }}>
-                                      {t("label_return_short")} {formatScheduleMinutes(entry.returnMinutes)}
-                                    </div>
-                                  )}
-                                  <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-                                    <button
-                                      type="button"
-                                      onClick={() => applyCommonRoute(entry)}
-                                      style={{
-                                        flex: 1,
-                                        minWidth: 0,
-                                        padding: "5px 4px",
-                                        borderRadius: 5,
-                                        border: "none",
-                                        background: colors.navy,
-                                        color: colors.white,
-                                        fontSize: 9,
-                                        fontWeight: 600,
-                                        cursor: "pointer",
-                                        fontFamily: "'Inter', system-ui, sans-serif",
-                                      }}
-                                    >
-                                      {t("btn_use")}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      aria-label="删除"
-                                      onClick={() => deleteScheduleEntry(entry.id)}
-                                      style={{
-                                        padding: "4px 5px",
-                                        borderRadius: 5,
-                                        border: `1px solid ${colors.border}`,
-                                        background: colors.white,
-                                        color: "#dc2626",
-                                        cursor: "pointer",
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        lineHeight: 0,
-                                        flexShrink: 0,
-                                      }}
-                                    >
-                                      <span style={{ display: "flex" }}>{Icons.trash}</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-            </div>
-          </>
-        )}
+          <Routes>
+            <Route path="/find" element={<FindPage />} />
+            <Route path="/saved" element={<SavedPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="*" element={<Navigate to="/find" replace />} />
+          </Routes>
 
         {scheduleModalOpen && (
           <div
@@ -4893,168 +4779,102 @@ export default function CollegeRide() {
           </div>
         )}
 
-        {tab === "history" && (
-          <>
-            <div style={styles.sectionTitle}>{t("section_history")}</div>
-            <div style={styles.sectionHeadline}>{t("headline_history")}</div>
-            {ledger.trips.length === 0 ? (
-              <div style={{ ...styles.card, padding: "22px 18px", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, color: colors.muted, lineHeight: 1.6, textAlign: "center" }}>{t("history_empty")}</div>
-              </div>
-            ) : (
-              ledger.trips.map((trip) => {
-                const isPassenger = trip.role === "passenger";
-                const typeLabel = isPassenger ? t("tag_passenger") : t("tag_driver");
-                const sub =
-                  isPassenger && trip.driverName
-                    ? t("label_driver_was", { name: trip.driverName })
-                    : !isPassenger
-                      ? t("label_you_drove")
-                      : "";
-                const costStr = isPassenger ? formatUsd(trip.priceUsd) : `+${formatUsd(trip.incomeUsd)}`;
-                return (
-                  <div key={trip.id} style={styles.card}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600 }}>{formatHistoryTripDate(trip.ts, lang)}</div>
-                      <Tag text={typeLabel} accent={themePrimary} />
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
-                      {trip.from} — {trip.to}
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: 13, color: colors.muted }}>{sub}</span>
-                      <span
-                        style={{
-                          fontWeight: 700,
-                          fontSize: 16,
-                          color: isPassenger ? colors.text : colors.navy,
-                        }}
-                      >
-                        {costStr}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            <div
-              style={{
-                ...styles.card,
-                background: colors.navy,
-                textAlign: "center",
-                border: "none",
-              }}
-            >
-              <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12, marginBottom: 6, fontWeight: 600, letterSpacing: "0.06em" }}>{t("history_monthly_label")}</div>
-              <div style={{ color: colors.white, fontSize: 34, fontWeight: 700, letterSpacing: "-0.03em" }}>{formatUsd(monthlySavingsDisplay)}</div>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 6 }}>
-                {monthlySavingsPctValue != null ? t("history_monthly_vs", { pct: monthlySavingsPctValue }) : t("history_monthly_vs_pending")}
-              </div>
-            </div>
-          </>
-        )}
-
-        {tab === "profile" && (
-          <>
-            <div style={styles.sectionTitle}>{t("section_account")}</div>
-            <div style={styles.sectionHeadline}>{t("headline_profile")}</div>
-            <div style={{ ...styles.card, textAlign: "center", padding: "32px 20px 28px" }}>
-              <div
-                style={{
-                  width: 84,
-                  height: 84,
-                  borderRadius: "50%",
-                  background: colors.navy,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: colors.white,
-                  fontWeight: 700,
-                  fontSize: 30,
-                  margin: "0 auto 14px",
-                  border: `4px solid ${colors.white}`,
-                  boxShadow: `0 4px 16px rgba(${themePrimaryRgb}, 0.25)`,
-                }}
-              >
-                {profileAvatarInitial}
-              </div>
-              <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>{profileDisplayName}</div>
-              <div style={{ color: colors.muted, fontSize: 13, marginBottom: 14 }}>{user?.email ?? ""}</div>
-              <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", alignItems: "center" }}>
-                <Tag text={t("tag_verified_student")} accent={themePrimary} />
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-              {[
-                {
-                  label: t("stat_total_trips"),
-                  value: lang === "en" ? `${tripCountAll} trip${tripCountAll === 1 ? "" : "s"}` : `${tripCountAll} 次`,
-                },
-                { label: t("stat_savings"), value: formatUsd(ledger.stats.riderSavingsUsd) },
-                { label: t("stat_driver_income"), value: formatUsd(ledger.stats.driverIncomeUsd) },
-                { label: t("stat_carbon"), value: formatCarbonKg(ledger.stats.carbonKg) },
-              ].map((item) => (
-                <div key={item.label} style={{ ...styles.card, textAlign: "center", padding: "16px 12px" }}>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: colors.text }}>{item.value}</div>
-                  <div style={{ fontSize: 12, color: colors.muted, marginTop: 4, fontWeight: 500 }}>{item.label}</div>
-                </div>
-              ))}
-            </div>
-
-            <div style={styles.card}>
-              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{t("label_school")}</div>
-              <div style={{ fontSize: 17, color: colors.text, fontWeight: 600, letterSpacing: "-0.02em" }}>{schoolDisplay}</div>
-            </div>
-
+        {historyPlatformDelete ? (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 10055,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 16,
+              fontFamily: "'Inter', system-ui, sans-serif",
+            }}
+          >
             <button
               type="button"
-              onClick={() => signOut()}
+              aria-label={lang === "zh" ? "关闭" : "Close"}
+              disabled={historyPlatformDeleting}
+              onClick={() => !historyPlatformDeleting && setHistoryPlatformDelete(null)}
               style={{
+                position: "absolute",
+                inset: 0,
+                border: "none",
+                background: "rgba(0,0,0,0.5)",
+                cursor: historyPlatformDeleting ? "default" : "pointer",
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cr-history-delete-title"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "relative",
                 width: "100%",
-                padding: "14px 16px",
-                marginBottom: 12,
-                borderRadius: 12,
-                border: `1.5px solid ${colors.border}`,
-                background: colors.white,
-                color: "#b91c1c",
-                fontWeight: 700,
-                fontSize: 15,
-                cursor: "pointer",
-                fontFamily: "'Inter', system-ui, sans-serif",
+                maxWidth: 400,
+                background: colors.card,
+                color: colors.text,
+                borderRadius: 16,
+                padding: "20px 18px 18px",
+                boxShadow: "0 24px 56px rgba(0,0,0,0.35)",
+                zIndex: 1,
+                border: `1px solid ${colors.border}`,
               }}
             >
-              {t("btn_logout")}
-            </button>
-
-            <div style={styles.sectionTitle}>{t("section_settings")}</div>
-            <div style={{ ...styles.card, padding: 0, overflow: "hidden", marginBottom: 12 }}>
-              <button
-                type="button"
-                onClick={() => setProfileSettingsView("language")}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  padding: "16px 18px",
-                  border: "none",
-                  background: colors.card,
-                  cursor: "pointer",
-                  fontFamily: "'Inter', system-ui, sans-serif",
-                  textAlign: "left",
-                }}
-              >
-                <span style={{ display: "flex", color: colors.text, flexShrink: 0 }}>{Icons.globe}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15, color: colors.text }}>{t("label_language")}</div>
-                  <div style={{ fontSize: 13, color: colors.muted, marginTop: 3 }}>{lang === "zh" ? t("lang_zh") : t("lang_en")}</div>
-                </div>
-                <span style={{ display: "flex", color: colors.muted, flexShrink: 0, opacity: 0.85 }}>{Icons.chevronRight}</span>
-              </button>
+              <div id="cr-history-delete-title" style={{ fontWeight: 800, fontSize: 17, marginBottom: 10, letterSpacing: "-0.02em" }}>
+                {t("history_delete_title")}
+              </div>
+              <p style={{ fontSize: 14, color: colors.muted, marginBottom: 18, lineHeight: 1.55 }}>
+                {t("history_delete_desc", { route: historyPlatformDelete.routeLabel })}
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  disabled={historyPlatformDeleting}
+                  onClick={() => setHistoryPlatformDelete(null)}
+                  style={{
+                    flex: 1,
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: `1px solid ${colors.border}`,
+                    background: colors.white,
+                    color: colors.text,
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: historyPlatformDeleting ? "not-allowed" : "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                    opacity: historyPlatformDeleting ? 0.6 : 1,
+                  }}
+                >
+                  {t("btn_cancel")}
+                </button>
+                <button
+                  type="button"
+                  disabled={historyPlatformDeleting}
+                  onClick={() => void confirmDeleteHistoryPlatform()}
+                  style={{
+                    flex: 1,
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: "#dc2626",
+                    color: "#ffffff",
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: historyPlatformDeleting ? "not-allowed" : "pointer",
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                    opacity: historyPlatformDeleting ? 0.7 : 1,
+                  }}
+                >
+                  {historyPlatformDeleting ? t("btn_saving") : t("btn_delete_confirm")}
+                </button>
+              </div>
             </div>
-          </>
-        )}
+          </div>
+        ) : null}
+
         </div>
       </div>
 
@@ -5194,6 +5014,84 @@ export default function CollegeRide() {
           }}
         >
           {driverPublishToast}
+        </div>
+      ) : null}
+
+      {historyCompletedFullOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cr-history-completed-title"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            margin: "0 auto",
+            maxWidth: 430,
+            width: "100%",
+            zIndex: 20000,
+            background: colors.page,
+            display: "flex",
+            flexDirection: "column",
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            boxSizing: "border-box",
+            fontFamily: "'Inter', system-ui, sans-serif",
+          }}
+        >
+          <div
+            style={{
+              flexShrink: 0,
+              paddingTop: "max(14px, env(safe-area-inset-top, 0px))",
+              paddingLeft: 16,
+              paddingRight: 16,
+              paddingBottom: 14,
+              borderBottom: `1px solid ${colors.border}`,
+              background: colors.page,
+            }}
+          >
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 44 }}>
+              <button
+                type="button"
+                onClick={() => setHistoryCompletedFullOpen(false)}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "none",
+                  border: "none",
+                  padding: "8px 4px 8px 0",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 2,
+                  color: colors.text,
+                  fontWeight: 600,
+                  fontSize: 15,
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                }}
+              >
+                <span style={{ display: "flex" }}>{Icons.chevronLeft}</span>
+                {t("btn_back")}
+              </button>
+              <div id="cr-history-completed-title" style={{ fontWeight: 700, fontSize: 17, color: colors.text }}>
+                {t("history_completed_full_title")}
+              </div>
+            </div>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              minHeight: 0,
+              WebkitOverflowScrolling: "touch",
+              padding: "16px",
+            }}
+          >
+            {ledger.trips.map(renderHistoryLedgerTripCard)}
+          </div>
         </div>
       ) : null}
 
@@ -6001,5 +5899,6 @@ export default function CollegeRide() {
           </div>
       )}
     </div>
+    </AppContext.Provider>
   );
 }
