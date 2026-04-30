@@ -19,6 +19,7 @@ import { fetchMyBookings, insertBooking, deleteBooking } from "./api/bookings.js
 import { fetchRouteInfo } from "./api/routeInfo.js";
 import { calculateFare, calculateFareFallback } from "./utils/fareCalculator.js";
 import { shortPlaceName } from "./utils/scheduleUtils.js";
+import ChatModal from "./components/ChatModal.jsx";
 import {
   emptyLedger,
   loadUserLedger,
@@ -2102,6 +2103,7 @@ export default function CollegeRide() {
   const [myPassengerRequests, setMyPassengerRequests] = useState([]);
   const [myBookings, setMyBookings] = useState([]);
   const [historyCompletedFullOpen, setHistoryCompletedFullOpen] = useState(false);
+  const [chatBooking, setChatBooking] = useState(null);
   /** 记录页：删除云端行程确认 { kind, id, routeLabel } */
   const [historyPlatformDelete, setHistoryPlatformDelete] = useState(null);
   const [historyPlatformDeleting, setHistoryPlatformDeleting] = useState(false);
@@ -3906,6 +3908,7 @@ export default function CollegeRide() {
     monthlySavingsDisplay, monthlySavingsPctValue,
     myPlatformHistoryItems,
     historyCompletedFullOpen, setHistoryCompletedFullOpen,
+    chatBooking, setChatBooking,
     historyPlatformDelete, setHistoryPlatformDelete,
     historyPlatformDeleting,
     confirmDeleteHistoryPlatform,
@@ -5039,6 +5042,17 @@ export default function CollegeRide() {
         >
           {driverPublishToast}
         </div>
+      ) : null}
+
+      {chatBooking ? (
+        <ChatModal
+          booking={chatBooking}
+          userId={userId}
+          userName={user?.displayName?.trim() || user?.email?.split("@")[0] || (lang === "zh" ? "用户" : "User")}
+          colors={colors}
+          lang={lang}
+          onClose={() => setChatBooking(null)}
+        />
       ) : null}
 
       {historyCompletedFullOpen ? (

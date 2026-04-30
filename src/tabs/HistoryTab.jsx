@@ -20,6 +20,7 @@ export default function HistoryTab() {
     historyPlatformDeleting,
     confirmDeleteHistoryPlatform,
     setHistoryCompletedFullOpen,
+    setChatBooking,
   } = ctx;
 
   const renderHistoryLedgerTripCard = (trip) => {
@@ -234,26 +235,48 @@ export default function HistoryTab() {
                     }}
                   >
                     <div style={{ fontSize: 12, color: colors.muted, fontWeight: 600, minWidth: 0 }}>{formatHistoryTripDate(row.createdAt, lang)}</div>
-                    <button
-                      type="button"
-                      aria-label={t("history_delete_aria")}
-                      onClick={() => setHistoryPlatformDelete({ kind: row.kind, id: rowId, routeLabel: routeLine })}
-                      style={{
-                        flexShrink: 0,
-                        padding: "6px 8px",
-                        borderRadius: 8,
-                        border: `1px solid ${colors.border}`,
-                        background: colors.white,
-                        color: "#dc2626",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        lineHeight: 0,
-                      }}
-                    >
-                      <span style={{ display: "flex" }}>{Icons.trash}</span>
-                    </button>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      {(row.kind === "booking_passenger" || row.kind === "booking_driver") && (
+                        <button
+                          type="button"
+                          aria-label={lang === "zh" ? "发消息" : "Message"}
+                          onClick={() => setChatBooking(row.booking)}
+                          style={{
+                            padding: "6px 8px",
+                            borderRadius: 8,
+                            border: `1px solid ${colors.border}`,
+                            background: colors.white,
+                            color: colors.navy,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            lineHeight: 0,
+                          }}
+                        >
+                          <span style={{ display: "flex" }}>{Icons.chat}</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={t("history_delete_aria")}
+                        onClick={() => setHistoryPlatformDelete({ kind: row.kind, id: rowId, routeLabel: routeLine })}
+                        style={{
+                          padding: "6px 8px",
+                          borderRadius: 8,
+                          border: `1px solid ${colors.border}`,
+                          background: colors.white,
+                          color: "#dc2626",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          lineHeight: 0,
+                        }}
+                      >
+                        <span style={{ display: "flex" }}>{Icons.trash}</span>
+                      </button>
+                    </div>
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>{routeLine}</div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
