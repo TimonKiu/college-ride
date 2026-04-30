@@ -196,7 +196,6 @@ export default function HistoryTab() {
                 detailNode = (
                   <>
                     <div>{t("label_time")} · {row.req.time}</div>
-                    <div style={{ marginTop: 4 }}>{row.req.detour}</div>
                   </>
                 );
               } else {
