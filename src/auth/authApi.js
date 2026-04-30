@@ -141,7 +141,7 @@ export async function signIn({ email, password }) {
 
   const users = loadLocalUsers();
   const row = users[em];
-  if (!row) throw new Error("INVALID");
+  if (!row) throw new Error("USER_NOT_FOUND");
   const passHash = await sha256Hex(password);
   if (row.passHash !== passHash) throw new Error("INVALID");
   const user = { id: row.id, email: em, displayName: row.displayName, school: row.school };

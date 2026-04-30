@@ -27,6 +27,8 @@ export default function AuthScreens() {
   const [confirmHint, setConfirmHint] = useState(false);
   const [tosAccepted, setTosAccepted] = useState(false);
   const [termsView, setTermsView] = useState(false);
+  const [registerFromLogin, setRegisterFromLogin] = useState(false);
+  const [suggestRegister, setSuggestRegister] = useState(false);
 
   const titleStyle = useMemo(
     () => ({
@@ -60,10 +62,20 @@ export default function AuthScreens() {
     return false;
   }, [pending, mode, registerFormComplete]);
 
+  function switchToRegister() {
+    setMode("register");
+    setError("");
+    setConfirmHint(false);
+    setSuggestRegister(false);
+    setTosAccepted(false);
+    setRegisterFromLogin(true);
+  }
+
   async function handleLogin(e) {
     e.preventDefault();
     setError("");
     setConfirmHint(false);
+    setSuggestRegister(false);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       setError(s.err_email);
       return;
@@ -82,8 +94,13 @@ export default function AuthScreens() {
     } catch (err) {
       if (err?.message === "NOT_EDU") {
         setError(s.err_not_edu);
+      } else if (err?.message === "USER_NOT_FOUND") {
+        // Local mode: we know for certain the account doesn't exist
+        switchToRegister();
       } else if (err?.message === "INVALID" || err?.message?.includes("Invalid login")) {
+        // Supabase: can't distinguish wrong password vs non-existent — show error + register hint
         setError(s.err_invalid_creds);
+        setSuggestRegister(true);
       } else {
         setError(err?.message || s.err_generic);
       }
@@ -186,6 +203,8 @@ export default function AuthScreens() {
                 setError("");
                 setConfirmHint(false);
                 setTosAccepted(false);
+                setRegisterFromLogin(false);
+                setSuggestRegister(false);
               }}
               style={{
                 flex: 1,
@@ -237,6 +256,24 @@ export default function AuthScreens() {
               }}
             >
               {lang === "zh" ? "请查收邮箱中的确认链接。" : "Check your email to confirm your account."}
+            </div>
+          )}
+
+          {registerFromLogin && mode === "register" && (
+            <div
+              style={{
+                fontSize: 13,
+                color: RIDER_PRIMARY,
+                background: "rgba(37,99,235,0.07)",
+                border: `1px solid rgba(37,99,235,0.2)`,
+                borderRadius: 10,
+                padding: "10px 14px",
+                marginBottom: 14,
+                fontWeight: 600,
+                lineHeight: 1.5,
+              }}
+            >
+              {s.hint_register_from_login}
             </div>
           )}
 
@@ -307,8 +344,32 @@ export default function AuthScreens() {
           )}
 
           {error ? (
-            <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12, fontWeight: 500 }}>{error}</div>
+            <div style={{ color: "#dc2626", fontSize: 13, marginBottom: suggestRegister ? 6 : 12, fontWeight: 500 }}>{error}</div>
           ) : null}
+
+          {suggestRegister && mode === "login" && (
+            <div style={{ fontSize: 13, color: "#475569", marginBottom: 12 }}>
+              {s.suggest_register}{" "}
+              <button
+                type="button"
+                onClick={switchToRegister}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  color: RIDER_PRIMARY,
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  fontFamily: FONT,
+                  textDecoration: "underline",
+                  textUnderlineOffset: 2,
+                }}
+              >
+                {s.suggest_register_link}
+              </button>
+            </div>
+          )}
 
           {mode === "register" ? (
             <div
