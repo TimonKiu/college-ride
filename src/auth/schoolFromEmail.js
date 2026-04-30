@@ -19,6 +19,7 @@ export function getRegistrableEduDomain(email) {
 
 const KNOWN_SCHOOLS = {
   "jhu.edu": "Johns Hopkins University",
+  "jh.edu": "Johns Hopkins University",
   "stanford.edu": "Stanford University",
   "mit.edu": "Massachusetts Institute of Technology",
   "harvard.edu": "Harvard University",

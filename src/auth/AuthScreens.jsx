@@ -236,7 +236,7 @@ export default function AuthScreens() {
                 fontWeight: 600,
               }}
             >
-              {lang === "zh" ? "请查收邮箱中的确认链接（若已配置 Supabase 邮箱验证）。" : "Check your email to confirm your account (if email confirmation is enabled)."}
+              {lang === "zh" ? "请查收邮箱中的确认链接。" : "Check your email to confirm your account."}
             </div>
           )}
 
