@@ -1,9 +1,10 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { AUTH_STRINGS } from "./authStrings.js";
 import { useAuth } from "./AuthContext.jsx";
 import { isInstitutionalEduEmail } from "./eduEmail.js";
 import { getSchoolFromEmail } from "./schoolFromEmail.js";
 import TermsOfServicePage from "./TermsOfServicePage.jsx";
+import { verifySignupOtp } from "./authApi.js";
 
 const RIDER_PRIMARY = "#2563EB";
 const FONT = "'Inter', system-ui, sans-serif";
@@ -29,6 +30,11 @@ export default function AuthScreens() {
   const [termsView, setTermsView] = useState(false);
   const [registerFromLogin, setRegisterFromLogin] = useState(false);
   const [suggestRegister, setSuggestRegister] = useState(false);
+  const [otpEmail, setOtpEmail] = useState(null);
+  const [otpDigits, setOtpDigits] = useState(["", "", "", "", "", ""]);
+  const [otpError, setOtpError] = useState("");
+  const [otpPending, setOtpPending] = useState(false);
+  const otpRefs = [useRef(), useRef(), useRef(), useRef(), useRef(), useRef()];
 
   const titleStyle = useMemo(
     () => ({
@@ -145,7 +151,9 @@ export default function AuthScreens() {
         displayName: displayName.trim(),
       });
       if (res.needsEmailConfirm) {
-        setConfirmHint(true);
+        setOtpEmail(email.trim());
+        setOtpDigits(["", "", "", "", "", ""]);
+        setOtpError("");
       }
     } catch (err) {
       if (err?.message === "NOT_EDU") {
@@ -162,8 +170,163 @@ export default function AuthScreens() {
     }
   }
 
+  function handleOtpDigit(index, value) {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    const next = [...otpDigits];
+    next[index] = digit;
+    setOtpDigits(next);
+    setOtpError("");
+    if (digit && index < 5) {
+      otpRefs[index + 1].current?.focus();
+    }
+    if (next.every((d) => d !== "")) {
+      handleOtpSubmit(next.join(""));
+    }
+  }
+
+  function handleOtpKeyDown(index, e) {
+    if (e.key === "Backspace" && !otpDigits[index] && index > 0) {
+      otpRefs[index - 1].current?.focus();
+    }
+  }
+
+  async function handleOtpSubmit(code) {
+    const token = code ?? otpDigits.join("");
+    if (token.length < 6) {
+      setOtpError(lang === "zh" ? "请输入完整的 6 位验证码" : "Enter the full 6-digit code");
+      return;
+    }
+    setOtpPending(true);
+    setOtpError("");
+    try {
+      await verifySignupOtp({ email: otpEmail, token });
+    } catch (err) {
+      setOtpError(
+        err?.message?.includes("expired")
+          ? (lang === "zh" ? "验证码已过期，请重新注册" : "Code expired — please sign up again")
+          : err?.message?.includes("invalid") || err?.message?.toLowerCase().includes("otp")
+            ? (lang === "zh" ? "验证码不正确，请重新输入" : "Incorrect code, please try again")
+            : (lang === "zh" ? "验证失败，请重试" : "Verification failed, please try again")
+      );
+      setOtpDigits(["", "", "", "", "", ""]);
+      setTimeout(() => otpRefs[0].current?.focus(), 50);
+    } finally {
+      setOtpPending(false);
+    }
+  }
+
   if (termsView) {
     return <TermsOfServicePage lang={lang} onBack={() => setTermsView(false)} />;
+  }
+
+  if (otpEmail) {
+    return (
+      <div style={titleStyle}>
+        <div
+          style={{
+            width: "100%",
+            maxWidth: 430,
+            borderRadius: 18,
+            overflow: "hidden",
+            boxShadow: "0 12px 40px rgba(15,23,42,0.12)",
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <div
+            style={{
+              background: "linear-gradient(135deg, #1d4ed8 0%, #2563EB 100%)",
+              color: "#fff",
+              padding: "28px 24px 22px",
+              textAlign: "center",
+            }}
+          >
+            <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em" }}>{s.title}</h1>
+            <p style={{ margin: "12px 0 0", fontSize: 14, lineHeight: 1.55, opacity: 0.92 }}>
+              {lang === "zh" ? "验证您的邮箱" : "Verify your email"}
+            </p>
+          </div>
+          <div style={{ padding: "28px 24px 32px", textAlign: "center" }}>
+            <p style={{ fontSize: 14, color: "#475569", lineHeight: 1.6, margin: "0 0 6px" }}>
+              {lang === "zh" ? "验证码已发送至" : "We sent a 6-digit code to"}
+            </p>
+            <p style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", margin: "0 0 28px", wordBreak: "break-all" }}>
+              {otpEmail}
+            </p>
+            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 24 }}>
+              {otpDigits.map((d, i) => (
+                <input
+                  key={i}
+                  ref={otpRefs[i]}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={d}
+                  autoFocus={i === 0}
+                  onChange={(e) => handleOtpDigit(i, e.target.value)}
+                  onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                  style={{
+                    width: 48,
+                    height: 58,
+                    textAlign: "center",
+                    fontSize: 26,
+                    fontWeight: 700,
+                    fontFamily: FONT,
+                    borderRadius: 12,
+                    border: `2px solid ${d ? RIDER_PRIMARY : "#cbd5e1"}`,
+                    outline: "none",
+                    color: "#0f172a",
+                    background: d ? "rgba(37,99,235,0.05)" : "#fff",
+                    transition: "border-color 0.15s",
+                    caretColor: "transparent",
+                  }}
+                />
+              ))}
+            </div>
+            {otpError && (
+              <p style={{ fontSize: 13, color: "#dc2626", fontWeight: 500, margin: "0 0 16px" }}>{otpError}</p>
+            )}
+            <button
+              type="button"
+              disabled={otpPending || otpDigits.some((d) => !d)}
+              onClick={() => handleOtpSubmit()}
+              style={{
+                width: "100%",
+                padding: "14px 18px",
+                borderRadius: 12,
+                border: "none",
+                background: RIDER_PRIMARY,
+                color: "#fff",
+                fontSize: 16,
+                fontWeight: 700,
+                cursor: otpPending || otpDigits.some((d) => !d) ? "not-allowed" : "pointer",
+                opacity: otpPending || otpDigits.some((d) => !d) ? 0.55 : 1,
+                fontFamily: FONT,
+              }}
+            >
+              {otpPending
+                ? (lang === "zh" ? "验证中…" : "Verifying…")
+                : (lang === "zh" ? "确认验证码" : "Verify")}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setOtpEmail(null); setOtpDigits(["", "", "", "", "", ""]); setOtpError(""); }}
+              style={{
+                marginTop: 14,
+                background: "none",
+                border: "none",
+                color: "#64748b",
+                fontSize: 13,
+                cursor: "pointer",
+                fontFamily: FONT,
+              }}
+            >
+              {lang === "zh" ? "← 返回重新注册" : "← Back to sign up"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -243,19 +406,6 @@ export default function AuthScreens() {
               }}
             >
               {s.banner_local}
-            </div>
-          )}
-
-          {confirmHint && (
-            <div
-              style={{
-                fontSize: 13,
-                color: RIDER_PRIMARY,
-                marginBottom: 14,
-                fontWeight: 600,
-              }}
-            >
-              {lang === "zh" ? "请查收邮箱中的确认链接。" : "Check your email to confirm your account."}
             </div>
           )}
 
