@@ -4,7 +4,7 @@ import { useAuth } from "./AuthContext.jsx";
 import { isInstitutionalEduEmail } from "./eduEmail.js";
 import { getSchoolFromEmail } from "./schoolFromEmail.js";
 import TermsOfServicePage from "./TermsOfServicePage.jsx";
-import { verifySignupOtp } from "./authApi.js";
+import { verifySignupOtp, resendSignupOtp } from "./authApi.js";
 
 const RIDER_PRIMARY = "#2563EB";
 const FONT = "'Inter', system-ui, sans-serif";
@@ -34,6 +34,8 @@ export default function AuthScreens() {
   const [otpDigits, setOtpDigits] = useState(["", "", "", "", "", ""]);
   const [otpError, setOtpError] = useState("");
   const [otpPending, setOtpPending] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [resendMsg, setResendMsg] = useState("");
   const otpRefs = [useRef(), useRef(), useRef(), useRef(), useRef(), useRef()];
 
   const titleStyle = useMemo(
@@ -190,6 +192,25 @@ export default function AuthScreens() {
     }
   }
 
+  async function handleResend() {
+    if (resendCooldown > 0) return;
+    setResendMsg("");
+    setOtpError("");
+    try {
+      await resendSignupOtp({ email: otpEmail });
+      setResendMsg(lang === "zh" ? "验证码已重新发送，请查收邮箱" : "Code resent — check your inbox");
+      setResendCooldown(60);
+      const timer = setInterval(() => {
+        setResendCooldown((v) => {
+          if (v <= 1) { clearInterval(timer); return 0; }
+          return v - 1;
+        });
+      }, 1000);
+    } catch {
+      setOtpError(lang === "zh" ? "发送失败，请稍后重试" : "Failed to resend, please try again");
+    }
+  }
+
   async function handleOtpSubmit(code) {
     const token = code ?? otpDigits.join("");
     if (token.length < 6) {
@@ -308,21 +329,43 @@ export default function AuthScreens() {
                 ? (lang === "zh" ? "验证中…" : "Verifying…")
                 : (lang === "zh" ? "确认验证码" : "Verify")}
             </button>
-            <button
-              type="button"
-              onClick={() => { setOtpEmail(null); setOtpDigits(["", "", "", "", "", ""]); setOtpError(""); }}
-              style={{
-                marginTop: 14,
-                background: "none",
-                border: "none",
-                color: "#64748b",
-                fontSize: 13,
-                cursor: "pointer",
-                fontFamily: FONT,
-              }}
-            >
-              {lang === "zh" ? "← 返回重新注册" : "← Back to sign up"}
-            </button>
+            <div style={{ marginTop: 20, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+              {resendMsg && (
+                <p style={{ fontSize: 13, color: "#16a34a", fontWeight: 600, margin: 0 }}>{resendMsg}</p>
+              )}
+              <button
+                type="button"
+                disabled={resendCooldown > 0}
+                onClick={handleResend}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: resendCooldown > 0 ? "#94a3b8" : RIDER_PRIMARY,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: resendCooldown > 0 ? "default" : "pointer",
+                  fontFamily: FONT,
+                }}
+              >
+                {resendCooldown > 0
+                  ? (lang === "zh" ? `重新发送 (${resendCooldown}s)` : `Resend code (${resendCooldown}s)`)
+                  : (lang === "zh" ? "没收到？重新发送验证码" : "Didn't receive it? Resend code")}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setOtpEmail(null); setOtpDigits(["", "", "", "", "", ""]); setOtpError(""); setResendMsg(""); setResendCooldown(0); }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#64748b",
+                  fontSize: 13,
+                  cursor: "pointer",
+                  fontFamily: FONT,
+                }}
+              >
+                {lang === "zh" ? "← 返回重新注册" : "← Back to sign up"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

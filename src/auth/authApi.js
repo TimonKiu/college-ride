@@ -149,6 +149,12 @@ export async function signIn({ email, password }) {
   return { user };
 }
 
+export async function resendSignupOtp({ email }) {
+  if (authMode !== "supabase" || !supabase) throw new Error("OTP_NOT_SUPPORTED");
+  const { error } = await supabase.auth.resend({ type: "signup", email: email.trim().toLowerCase() });
+  if (error) throw new Error(error.message);
+}
+
 export async function verifySignupOtp({ email, token }) {
   if (authMode !== "supabase" || !supabase) {
     throw new Error("OTP_NOT_SUPPORTED");
