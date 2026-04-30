@@ -7,6 +7,7 @@ import {
   PLATFORM_STATUS_I18N,
   HISTORY_LEDGER_PREVIEW_MAX,
 } from "../utils/historyUtils.js";
+import { shortPlaceName } from "../utils/scheduleUtils.js";
 
 export default function HistoryTab() {
   const ctx = useAppCtx();
@@ -38,7 +39,7 @@ export default function HistoryTab() {
           <Tag text={typeLabel} accent={themePrimary} />
         </div>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.02em" }}>
-          {trip.from} — {trip.to}
+          {shortPlaceName(trip.from)} — {shortPlaceName(trip.to)}
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 13, color: colors.muted }}>{sub}</span>
@@ -180,7 +181,7 @@ export default function HistoryTab() {
               let sk, routeLine, rowId, detailNode;
               if (row.kind === "driver_publish") {
                 sk = inferPlatformStatusKey("driver_publish", row.ride.time);
-                routeLine = `${row.ride.from} — ${row.ride.to}`;
+                routeLine = `${shortPlaceName(row.ride.from)} — ${shortPlaceName(row.ride.to)}`;
                 rowId = row.ride.id;
                 detailNode = (
                   <>
@@ -190,7 +191,7 @@ export default function HistoryTab() {
                 );
               } else if (row.kind === "passenger_request") {
                 sk = inferPlatformStatusKey("passenger_request", row.req.time);
-                routeLine = `${row.req.from} — ${row.req.to}`;
+                routeLine = `${shortPlaceName(row.req.from)} — ${shortPlaceName(row.req.to)}`;
                 rowId = row.req.id;
                 detailNode = (
                   <>
@@ -202,7 +203,7 @@ export default function HistoryTab() {
                 // booking_passenger or booking_driver
                 const b = row.booking;
                 sk = inferPlatformStatusKey(row.kind, b.time);
-                routeLine = `${b.from} — ${b.to}`;
+                routeLine = `${shortPlaceName(b.from)} — ${shortPlaceName(b.to)}`;
                 rowId = b.id;
                 const counterpart = row.kind === "booking_passenger"
                   ? (lang === "zh" ? `司机：${b.driverName}` : `Driver: ${b.driverName}`)

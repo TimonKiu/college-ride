@@ -18,6 +18,7 @@ import { fetchPassengerRequests, fetchMyPassengerRequests, insertPassengerReques
 import { fetchMyBookings, insertBooking, deleteBooking } from "./api/bookings.js";
 import { fetchRouteInfo } from "./api/routeInfo.js";
 import { calculateFare, calculateFareFallback } from "./utils/fareCalculator.js";
+import { shortPlaceName } from "./utils/scheduleUtils.js";
 import {
   emptyLedger,
   loadUserLedger,
@@ -4002,7 +4003,7 @@ export default function CollegeRide() {
             {t("booking_confirmed_desc", { driver: selectedRide.driver })} <strong style={{ color: colors.white }}>{selectedRide.time}</strong> {t("booking_confirmed_pickup")}
             <br />
             <span style={{ color: "rgba(255,255,255,0.9)" }}>
-              {selectedRide.from} — {selectedRide.to}
+              {shortPlaceName(selectedRide.from)} — {shortPlaceName(selectedRide.to)}
             </span>
           </p>
           <div

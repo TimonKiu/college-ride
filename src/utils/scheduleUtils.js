@@ -4,15 +4,62 @@ export function formatScheduleMinutes(minutes) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-export function shortSchedulePlaceName(raw, { fallback = "地点" } = {}) {
+/**
+ * Shorten any place string for compact display.
+ *
+ * Logic:
+ *  - Named place  (first segment starts with a letter):
+ *      show first segment only, truncate at 28 chars
+ *      e.g. "Johns Hopkins University - Homewood Campus, 3400 N Charles…"
+ *           → "Johns Hopkins University - H…"  (but we keep full if ≤28)
+ *
+ *  - Street address (first segment starts with a digit):
+ *      show  "Number StreetName, City"  — no state, zip, country
+ *      e.g. "1919 North Nash Street, Arlington, Virginia, 22209, United States"
+ *           → "1919 North Nash St, Arlington"
+ *
+ * @param {string|null} raw
+ * @param {object} [opts]
+ * @param {string} [opts.fallback]
+ * @param {number} [opts.max]   max chars (default 28)
+ */
+export function shortPlaceName(raw, { fallback = "—", max = 28 } = {}) {
   if (raw == null) return fallback;
   const s = String(raw).trim();
   if (!s) return fallback;
-  const first = s.split(/[,，]/)[0].trim();
-  const chunk = first || s;
-  const max = 20;
-  if (chunk.length <= max) return chunk;
-  return `${chunk.slice(0, max)}…`;
+
+  const parts = s.split(/\s*[,，]\s*/);
+  const first = parts[0]?.trim() || s;
+
+  // Street address: starts with one or more digits
+  if (/^\d/.test(first)) {
+    const street = first
+      .replace(/\bStreet\b/gi, "St")
+      .replace(/\bAvenue\b/gi, "Ave")
+      .replace(/\bBoulevard\b/gi, "Blvd")
+      .replace(/\bDrive\b/gi, "Dr")
+      .replace(/\bRoad\b/gi, "Rd")
+      .replace(/\bLane\b/gi, "Ln")
+      .replace(/\bCourt\b/gi, "Ct")
+      .replace(/\bNorth\b/gi, "N")
+      .replace(/\bSouth\b/gi, "S")
+      .replace(/\bEast\b/gi, "E")
+      .replace(/\bWest\b/gi, "W");
+    // second part is usually city (skip state/zip/country)
+    const city = parts[1]?.trim();
+    const result = city ? `${street}, ${city}` : street;
+    if (result.length <= max + 6) return result; // a bit more room for address
+    return `${result.slice(0, max + 4)}…`;
+  }
+
+  // Named place: just the first segment
+  if (first.length <= max) return first;
+  return `${first.slice(0, max)}…`;
+}
+
+/** Legacy alias used by schedule UI */
+export function shortSchedulePlaceName(raw, { fallback = "地点" } = {}) {
+  return shortPlaceName(raw, { fallback, max: 20 });
 }
 
 const DEFAULT_SCHEDULE_GRID_START_MIN = 6 * 60;

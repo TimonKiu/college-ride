@@ -12,7 +12,7 @@ import {
   sameCalendarDay,
   formatScheduleChipLabel,
 } from "../components/shared.jsx";
-import { shortSchedulePlaceName } from "../utils/scheduleUtils.js";
+import { shortSchedulePlaceName, shortPlaceName } from "../utils/scheduleUtils.js";
 
 export default function FindPage() {
   const ctx = useAppCtx();
@@ -560,11 +560,11 @@ export default function FindPage() {
                     <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" }}>
                       <div>
                         <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_from")} </span>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.from}</span>
+                        <span style={{ fontSize: 14, fontWeight: 600 }}>{shortPlaceName(ride.from)}</span>
                       </div>
                       <div>
                         <span style={{ fontSize: 11, color: colors.muted, fontWeight: 600 }}>{t("label_to")} </span>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{ride.to}</span>
+                        <span style={{ fontSize: 14, fontWeight: 600 }}>{shortPlaceName(ride.to)}</span>
                       </div>
                     </div>
                   </div>
@@ -925,9 +925,9 @@ export default function FindPage() {
                   </div>
                   <div style={{ padding: "12px 14px", background: colors.page, borderRadius: 10, marginBottom: 12, border: `1px solid ${colors.border}` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 13, fontWeight: 600 }}>
-                      <span>{req.from}</span>
+                      <span>{shortPlaceName(req.from)}</span>
                       <span style={{ color: colors.muted, fontWeight: 400 }}>—</span>
-                      <span>{req.to}</span>
+                      <span>{shortPlaceName(req.to)}</span>
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
